@@ -1,7 +1,8 @@
 use super::super::utils::http_get;
 use crate::error::Result;
 use std::collections::BTreeMap;
-
+use serde_json::Value;
+use std::time::Duration;
 const BASE_URL: &str = "https://api.bitget.com";
 
 /// The RESTful client for Bitget swap markets.
@@ -34,5 +35,39 @@ impl BitgetSwapRestClient {
     /// - <https://api.bitget.com/api/mix/v1/market/open-interest?symbol=BTCUSDT_UMCBL>
     pub fn fetch_open_interest(symbol: &str) -> Result<String> {
         gen_api!(format!("/api/mix/v1/market/open-interest?symbol={symbol}"))
+    }
+    
+    /// Get ticker information for all symbols.
+    ///
+    /// For example: <https://api.bitget.com/api/mix/v1/market/tickers?productType=umcbl>
+    ///
+    /// Rate Limit: 20 requests per second (IP)
+    ///
+    /// Returns information including:
+    /// - symbol: Symbol Id
+    /// - last: Latest price
+    /// - bestAsk/bestBid: Ask/Bid prices
+    /// - high24h/low24h: Highest/Lowest price in 24 hours
+    /// - baseVolume: Base currency trading volume
+    /// - quoteVolume: Quote currency trading volume
+    /// - fundingRate: Funding rate
+    /// - holdingAmount: Holding amount
+    pub async fn fetch_all_symbols() -> Result<Vec<Value>> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        
+        let usdt_futures_url = "https://api.bitget.com/api/mix/v1/market/contracts?productType=umcbl";
+        let usdt_futures_response = client.get(usdt_futures_url).send().await?;
+        let usdt_futures_json: Value = usdt_futures_response.json().await?;
+        
+        let mut contracts = Vec::new();
+        if let Some(data) = usdt_futures_json["data"].as_array() {
+            for contract in data {
+                contracts.push(contract.clone());
+            }
+        }
+       
+        Ok(contracts)
     }
 }

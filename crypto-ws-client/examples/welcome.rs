@@ -1,15 +1,3 @@
-# crypto-ws-client
-
-[![](https://img.shields.io/github/workflow/status/crypto-crawler/crypto-crawler-rs/CI/main)](https://github.com/crypto-crawler/crypto-crawler-rs/actions?query=branch%3Amain)
-[![](https://img.shields.io/crates/v/crypto-ws-client.svg)](https://crates.io/crates/crypto-ws-client)
-[![](https://docs.rs/crypto-ws-client/badge.svg)](https://docs.rs/crypto-ws-client)
-==========
-
-A versatile websocket client that supports many cryptocurrency exchanges.
-
-## Usage
-
-```rust
 use crypto_ws_client::{BinanceSpotWSClient, WSClient};
 use log::info;
 use std::time::Duration;
@@ -52,4 +40,3 @@ async fn main() {
         tokio::time::sleep(Duration::from_secs(TIMEOUT_FOR_RESTART)).await;
     }
 }
-```

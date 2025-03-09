@@ -100,8 +100,8 @@ impl MessageHandler for BitgetMessageHandler {
         if let Some(event) = obj.get("event") {
             match event.as_str().unwrap() {
                 "error" => error!("Received {} from {}", msg, EXCHANGE_NAME),
-                "subscribe" => info!("Received {} from {}", msg, EXCHANGE_NAME),
-                "unsubscribe" => info!("Received {} from {}", msg, EXCHANGE_NAME),
+                "subscribe" => debug!("Received {} from {}", msg, EXCHANGE_NAME),
+                "unsubscribe" => debug!("Received {} from {}", msg, EXCHANGE_NAME),
                 _ => warn!("Received {} from {}", msg, EXCHANGE_NAME),
             }
             MiscMessage::Other

@@ -4,6 +4,7 @@ use std::{
     sync::{
         atomic::{AtomicIsize, Ordering, AtomicBool},
         Arc,
+        Mutex,
     },
     time::Duration,
 };
@@ -34,6 +35,8 @@ pub(crate) struct WSClientInternal<H: MessageHandler> {
     reconnect_in_progress: Arc<AtomicBool>,
     // Добавляем хранилище для активных подписок
     active_subscriptions: std::sync::Mutex<Vec<String>>,
+    // Добавляем handle для пинг-задачи, чтобы можно было отменить её при переподключении
+    ping_task_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl<H: MessageHandler> WSClientInternal<H> {
@@ -62,6 +65,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                     command_tx,
                     reconnect_in_progress: Arc::new(AtomicBool::new(false)),
                     active_subscriptions: std::sync::Mutex::new(Vec::new()),
+                    ping_task_handle: std::sync::Mutex::new(None),
                 }
             }
             Err(err) => match err {
@@ -114,6 +118,15 @@ impl<H: MessageHandler> WSClientInternal<H> {
         // Устанавливаем флаг, что переподключение в процессе
         self.reconnect_in_progress.store(true, Ordering::SeqCst);
         
+        // Отменяем старую пинг-задачу, если она существует
+        {
+            let mut guard = self.ping_task_handle.lock().unwrap();
+            if let Some(handle) = guard.take() {
+                info!("Aborting old ping task during reconnection");
+                handle.abort();
+            }
+        }
+        
         // Максимальное количество попыток переподключения
         const MAX_RECONNECT_ATTEMPTS: u32 = 5;
         // Начальная задержка в секундах
@@ -158,6 +171,10 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         }
                     }
                     
+                    // Запускаем новую пинг-задачу после успешного переподключения
+                    let num_unanswered_ping = Arc::new(AtomicIsize::new(0));
+                    self.start_ping_task(&_handler, num_unanswered_ping);
+                    
                     self.reconnect_in_progress.store(false, Ordering::SeqCst);
                     return Some(message_rx);
                 }
@@ -176,19 +193,12 @@ impl<H: MessageHandler> WSClientInternal<H> {
         None
     }
 
-    pub async fn run(&self) {
-        let (mut handler, mut message_rx, tx) = {
-            let mut guard = self.params_rx.lock().unwrap();
-            guard.try_recv().unwrap()
-        };
-
-        let num_unanswered_ping = Arc::new(AtomicIsize::new(0)); // for debug only
-        
-        // Создаем клон handler для использования в переподключении
-        let handler_clone = unsafe { std::ptr::read(&handler as *const H) };
-        
-        // Запускаем пинг только один раз
+    // Добавляем метод для запуска пинг-задачи
+    fn start_ping_task(&self, handler: &H, num_unanswered_ping: Arc<AtomicIsize>) {
         if let Some((msg, interval)) = handler.get_ping_msg_and_interval() {
+            // Создаем канал для отслеживания состояния соединения
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+            
             // send heartbeat periodically
             let command_tx_clone = self.command_tx.clone();
             let num_unanswered_ping_clone = num_unanswered_ping.clone();
@@ -199,7 +209,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
             // Используем Arc для безопасного доступа к AtomicBool между потоками
             let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
             
-            tokio::task::spawn(async move {
+            let ping_task = tokio::task::spawn(async move {
                 let mut timer = {
                     let duration = Duration::from_secs(interval / 2 + 1);
                     tokio::time::interval(duration)
@@ -214,6 +224,8 @@ impl<H: MessageHandler> WSClientInternal<H> {
                             debug!("{:?} sending ping {}", now, msg.to_text().unwrap());
                             if let Err(err) = command_tx_clone.send(msg.clone()).await {
                                 error!("Error sending ping {}", err);
+                                // Если канал закрыт, выходим из цикла
+                                break;
                             } else {
                                 num_unanswered_ping_clone.fetch_add(1, Ordering::SeqCst);
                             }
@@ -231,15 +243,74 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                 // Отправляем сообщение о закрытии соединения, чтобы инициировать переподключение
                                 if let Err(err) = command_tx_clone.send(Message::Close(None)).await {
                                     error!("Failed to send close message: {}", err);
+                                    // Если канал закрыт, выходим из цикла
+                                    break;
                                 } else {
                                     info!("Sent close message to initiate reconnection for {}", exchange_clone);
                                 }
                             }
                         }
+                        
+                        // Проверяем сигнал остановки
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Ping task for {} received shutdown signal, stopping", exchange_clone);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                info!("Ping task for {} stopped", exchange_clone);
+            });
+            
+            // Сохраняем handle пинг-задачи и sender для отмены
+            {
+                let mut guard = self.ping_task_handle.lock().unwrap();
+                *guard = Some(ping_task);
+            }
+            
+            // Создаем отдельную задачу для мониторинга состояния переподключения
+            let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
+            let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
+            
+            // Запускаем задачу, которая будет следить за флагом reconnect_in_progress
+            // и отправлять сигнал остановки пинг-задаче при необходимости
+            tokio::task::spawn(async move {
+                let mut check_interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    check_interval.tick().await;
+                    
+                    // Если началось переподключение, отправляем сигнал остановки
+                    if reconnect_in_progress_clone.load(Ordering::Acquire) {
+                        let mut guard = shutdown_tx.lock().unwrap();
+                        if let Some(tx) = guard.take() {
+                            info!("Sending shutdown signal to ping task for {} due to reconnection", exchange_clone);
+                            if let Err(err) = tx.send(true) {
+                                error!("Failed to send shutdown signal to ping task: {}", err);
+                            }
+                            // Выходим из цикла после отправки сигнала
+                            break;
+                        }
                     }
                 }
             });
         }
+    }
+
+    pub async fn run(&self) {
+        let (mut handler, mut message_rx, tx) = {
+            let mut guard = self.params_rx.lock().unwrap();
+            guard.try_recv().unwrap()
+        };
+
+        let num_unanswered_ping = Arc::new(AtomicIsize::new(0)); // for debug only
+        
+        // Создаем клон handler для использования в переподключении
+        let handler_clone = unsafe { std::ptr::read(&handler as *const H) };
+        
+        // Запускаем пинг только один раз
+        self.start_ping_task(&handler, num_unanswered_ping.clone());
 
         // Основной цикл с поддержкой переподключения
         'connection_loop: loop {
@@ -365,6 +436,15 @@ impl<H: MessageHandler> WSClientInternal<H> {
     }
 
     pub async fn close(&self) {
+        // Отменяем пинг-задачу при закрытии соединения
+        {
+            let mut guard = self.ping_task_handle.lock().unwrap();
+            if let Some(handle) = guard.take() {
+                info!("Aborting ping task during connection close");
+                handle.abort();
+            }
+        }
+        
         // close the websocket connection and break the while loop in run()
         _ = self.command_tx.send(Message::Close(None)).await;
     }

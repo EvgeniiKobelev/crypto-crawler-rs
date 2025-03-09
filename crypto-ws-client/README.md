@@ -7,6 +7,12 @@
 
 A versatile websocket client that supports many cryptocurrency exchanges.
 
+## RUN
+
+```rust
+cargo run --example welcome
+```
+
 ## Usage
 
 ```rust

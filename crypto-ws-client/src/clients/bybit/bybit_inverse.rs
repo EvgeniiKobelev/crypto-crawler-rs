@@ -10,16 +10,17 @@ use crate::{
 
 use super::utils::{BybitMessageHandler, EXCHANGE_NAME};
 
-const WEBSOCKET_URL: &str = "wss://stream.bybit.com/realtime";
+// Обновленный URL для API v5
+const WEBSOCKET_URL: &str = "wss://stream.bybit.com/v5/public/inverse";
 
 /// Bybit Inverses markets.
 ///
 /// InverseFuture:
-///   * WebSocket API doc: <https://bybit-exchange.github.io/docs/inverse_futures/>
-///   * Trading at: <https://www.bybit.com/trade/inverse/futures/BTCUSD_BIQ>
+///   * WebSocket API doc: <https://bybit-exchange.github.io/docs/v5/websocket/public/trade>
+///   * Trading at: <https://www.bybit.com/trade/inverse/futures/>
 ///
 /// InverseSwap:
-///   * WebSocket API doc: <https://bybit-exchange.github.io/docs/inverse/#t-websocket>
+///   * WebSocket API doc: <https://bybit-exchange.github.io/docs/v5/websocket/public/trade>
 ///   * Trading at: <https://www.bybit.com/trade/inverse/>
 pub struct BybitInverseWSClient {
     client: WSClientInternal<BybitMessageHandler>,
@@ -36,11 +37,11 @@ impl_new_constructor!(
 
 impl_trait!(Trade, BybitInverseWSClient, subscribe_trade, "trade");
 #[rustfmt::skip]
-// Prefer orderBookL2_25 over orderBook_200.100ms because /public/orderBook/L2
-// returns a top 25 snapshot, which is the same depth as orderBookL2_25.
-impl_trait!(OrderBook, BybitInverseWSClient, subscribe_orderbook, "orderBookL2_25");
+// В API v5 используется orderbook.25 вместо orderBookL2_25
+impl_trait!(OrderBook, BybitInverseWSClient, subscribe_orderbook, "orderbook.25");
 #[rustfmt::skip]
-impl_trait!(Ticker, BybitInverseWSClient, subscribe_ticker, "instrument_info.100ms");
+// В API v5 используется tickers вместо instrument_info.100ms
+impl_trait!(Ticker, BybitInverseWSClient, subscribe_ticker, "tickers");
 impl_candlestick!(BybitInverseWSClient);
 panic_bbo!(BybitInverseWSClient);
 panic_l3_orderbook!(BybitInverseWSClient);
@@ -51,8 +52,7 @@ impl_ws_client_trait!(BybitInverseWSClient);
 struct BybitInverseCommandTranslator {}
 
 impl BybitInverseCommandTranslator {
-    // https://bybit-exchange.github.io/docs/inverse_futures/#t-websocketklinev2
-    // https://bybit-exchange.github.io/docs/inverse/#t-websocketklinev2
+    // https://bybit-exchange.github.io/docs/v5/websocket/public/kline
     fn to_candlestick_raw_channel(interval: usize) -> String {
         let interval_str = match interval {
             60 => "1",
@@ -68,10 +68,11 @@ impl BybitInverseCommandTranslator {
             604800 => "W",
             2592000 => "M",
             _ => panic!(
-                "Bybit InverseFuture has intervals 1min,5min,15min,30min,60min,4hour,1day,1week,1mon"
+                "Bybit InverseFuture has intervals 1min,3min,5min,15min,30min,60min,120min,240min,360min,1day,1week,1month"
             ),
         };
-        format!("klineV2.{interval_str}")
+        // В API v5 используется kline.{interval} вместо klineV2.{interval}
+        format!("kline.{interval_str}")
     }
 }
 

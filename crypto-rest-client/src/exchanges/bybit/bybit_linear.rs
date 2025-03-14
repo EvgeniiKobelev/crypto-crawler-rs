@@ -1,8 +1,8 @@
-use super::utils::http_get;
+use super::super::utils::http_get;
 use crate::error::Result;
-use std::collections::BTreeMap;
-
-const BASE_URL: &str = "https://api.bybit.com/v2";
+use std::{collections::BTreeMap, time::Duration};
+use serde_json::Value;
+const BASE_URL: &str = "https://api.bybit.com";
 
 /// The RESTful client for Bybit.
 ///
@@ -58,5 +58,22 @@ impl BybitRestClient {
     /// - <https://api.bybit.com/v2/public/account-ratio?symbol=BTCUSDU22&period=5min&limit=500>
     pub fn fetch_long_short_ratio(symbol: &str) -> Result<String> {
         gen_api!(format!("/public/account-ratio?symbol={symbol}&period=5min&limit=200"))
+    }
+
+    pub async fn fetch_all_symbols() -> Result<Vec<Value>> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+
+        let url = format!("{}/v5/market/tickers?category=linear", BASE_URL);
+        let response = client.get(url).send().await?;
+        let body: Value = response.json().await?;
+        let mut markets = Vec::new();
+        if let Some(data) = body["result"]["list"].as_array() {
+            for market in data {
+                markets.push(market.clone());
+            }
+        }
+        Ok(markets)
     }
 }

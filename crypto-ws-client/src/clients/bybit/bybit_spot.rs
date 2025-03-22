@@ -10,27 +10,27 @@ use crate::{
 
 use super::utils::{BybitMessageHandler, EXCHANGE_NAME, UPLINK_LIMIT};
 
-// Обновленный URL для API v5
-const WEBSOCKET_URL: &str = "wss://stream.bybit.com/v5/public/linear";
+// URL для API v5 Spot
+const WEBSOCKET_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 
-/// Bybit LinearSwap market.
+/// Bybit Spot market.
 ///
 /// * WebSocket API doc: <https://bybit-exchange.github.io/docs/v5/websocket/public/trade>
-/// * Trading at: <https://www.bybit.com/trade/usdt/>
-pub struct BybitLinearSwapWSClient {
+/// * Trading at: <https://www.bybit.com/trade/spot/>
+pub struct BybitSpotWSClient {
     client: WSClientInternal<BybitMessageHandler>,
-    translator: BybitLinearCommandTranslator,
+    translator: BybitSpotCommandTranslator,
 }
 
 impl_new_constructor!(
-    BybitLinearSwapWSClient,
+    BybitSpotWSClient,
     EXCHANGE_NAME,
     WEBSOCKET_URL,
     BybitMessageHandler {},
-    BybitLinearCommandTranslator {}
+    BybitSpotCommandTranslator {}
 );
 
-impl BybitLinearSwapWSClient {
+impl BybitSpotWSClient {
     pub async fn new_with_proxy(tx: std::sync::mpsc::Sender<String>, url: Option<&str>, proxy_string: &str) -> Self {
         // Используем прокси в формате socks5://a7W4HM:0BFYrV@45.81.77.174:8000
         let real_url = match url {
@@ -41,7 +41,7 @@ impl BybitLinearSwapWSClient {
         // Устанавливаем переменную окружения для прокси
         std::env::set_var("https_proxy", proxy_string);
         
-        let client = BybitLinearSwapWSClient {
+        let client = BybitSpotWSClient {
             client: WSClientInternal::connect(
                 EXCHANGE_NAME,
                 real_url,
@@ -50,7 +50,7 @@ impl BybitLinearSwapWSClient {
                 tx,
             )
             .await,
-            translator: BybitLinearCommandTranslator {},
+            translator: BybitSpotCommandTranslator {},
         };
         
         // Очищаем переменную окружения, чтобы не влиять на другие соединения
@@ -59,24 +59,24 @@ impl BybitLinearSwapWSClient {
         client
     }
 }
-impl_trait!(Trade, BybitLinearSwapWSClient, subscribe_trade, "trade");
+
+impl_trait!(Trade, BybitSpotWSClient, subscribe_trade, "trade");
 #[rustfmt::skip]
-// В API v5 используется orderbook.1 вместо orderBookL2_25Topic:
-// orderbook.{depth}.{symbol} e.g., orderbook.1.BTCUSDT
-impl_trait!(OrderBook, BybitLinearSwapWSClient, subscribe_orderbook, "orderbook.1");
+// В API v5 используется orderbook.1 для актуального ордербука
+impl_trait!(OrderBook, BybitSpotWSClient, subscribe_orderbook, "orderbook.1");
 #[rustfmt::skip]
-// В API v5 используется tickers вместо instrument_info.100ms
-impl_trait!(Ticker, BybitLinearSwapWSClient, subscribe_ticker, "tickers");
-impl_candlestick!(BybitLinearSwapWSClient);
-panic_bbo!(BybitLinearSwapWSClient);
-panic_l3_orderbook!(BybitLinearSwapWSClient);
-panic_l2_topk!(BybitLinearSwapWSClient);
+// В API v5 используется tickers для получения сводной информации
+impl_trait!(Ticker, BybitSpotWSClient, subscribe_ticker, "tickers");
+impl_candlestick!(BybitSpotWSClient);
+panic_bbo!(BybitSpotWSClient);
+panic_l3_orderbook!(BybitSpotWSClient);
+panic_l2_topk!(BybitSpotWSClient);
 
-impl_ws_client_trait!(BybitLinearSwapWSClient);
+impl_ws_client_trait!(BybitSpotWSClient);
 
-struct BybitLinearCommandTranslator {}
+struct BybitSpotCommandTranslator {}
 
-impl BybitLinearCommandTranslator {
+impl BybitSpotCommandTranslator {
     // https://bybit-exchange.github.io/docs/v5/websocket/public/kline
     fn to_candlestick_raw_channel(interval: usize) -> String {
         let interval_str = match interval {
@@ -93,7 +93,7 @@ impl BybitLinearCommandTranslator {
             604800 => "W",
             2592000 => "M",
             _ => panic!(
-                "Bybit LinearSwap has intervals 1min,3min,5min,15min,30min,60min,120min,240min,360min,1day,1week,1month"
+                "Bybit Spot has intervals 1min,3min,5min,15min,30min,60min,120min,240min,360min,1day,1week,1month"
             ),
         };
         // В API v5 используется kline.{interval} вместо candle.{interval}
@@ -101,7 +101,7 @@ impl BybitLinearCommandTranslator {
     }
 }
 
-impl CommandTranslator for BybitLinearCommandTranslator {
+impl CommandTranslator for BybitSpotCommandTranslator {
     fn translate_to_commands(&self, subscribe: bool, topics: &[(String, String)]) -> Vec<String> {
         vec![super::utils::topics_to_command(topics, subscribe)]
     }
@@ -121,3 +121,4 @@ impl CommandTranslator for BybitLinearCommandTranslator {
         self.translate_to_commands(subscribe, &topics)
     }
 }
+

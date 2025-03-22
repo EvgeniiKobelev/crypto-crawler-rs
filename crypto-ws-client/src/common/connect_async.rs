@@ -37,12 +37,14 @@ pub async fn connect_async(
             proxy_url.port_or_known_default().unwrap()
         );
         let connect_url = Url::parse(url).unwrap();
+        let username = proxy_url.username();
+        let password = proxy_url.password().unwrap();
         let proxy_stream = Socks5Stream::connect_with_password(
             proxy_addr.to_string(),
             connect_url.host_str().unwrap().to_string(),
             connect_url.port_or_known_default().unwrap(),
-            env::var("https_proxy_username").unwrap_or("".to_string()),
-            env::var("https_proxy_password").unwrap_or("".to_string()),
+            username.to_string(),
+            password.to_string(),
             Config::default(),
         )
         .await

@@ -63,7 +63,7 @@ impl_trait!(Trade, BybitLinearSwapWSClient, subscribe_trade, "trade");
 #[rustfmt::skip]
 // В API v5 используется orderbook.1 вместо orderBookL2_25Topic:
 // orderbook.{depth}.{symbol} e.g., orderbook.1.BTCUSDT
-impl_trait!(OrderBook, BybitLinearSwapWSClient, subscribe_orderbook, "orderbook.1");
+impl_trait!(OrderBook, BybitLinearSwapWSClient, subscribe_orderbook, "orderbook.50");
 #[rustfmt::skip]
 // В API v5 используется tickers вместо instrument_info.100ms
 impl_trait!(Ticker, BybitLinearSwapWSClient, subscribe_ticker, "tickers");

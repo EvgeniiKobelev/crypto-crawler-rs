@@ -1,4 +1,5 @@
 use std::{error::Error as StdError, fmt};
+use reqwest::header::InvalidHeaderValue;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -21,6 +22,12 @@ impl From<reqwest::Error> for Error {
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
+        Error(err.to_string())
+    }
+}
+
+impl From<InvalidHeaderValue> for Error {
+    fn from(err: InvalidHeaderValue) -> Self {
         Error(err.to_string())
     }
 }

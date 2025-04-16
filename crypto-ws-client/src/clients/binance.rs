@@ -4,13 +4,13 @@ use std::{collections::HashMap, num::NonZeroU32};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
+    WSClient,
     common::{
         command_translator::CommandTranslator,
         message_handler::{MessageHandler, MiscMessage},
         utils::ensure_frame_size,
         ws_client_internal::WSClientInternal,
     },
-    WSClient,
 };
 use log::*;
 use serde_json::Value;
@@ -87,19 +87,23 @@ impl<const MARKET_TYPE: char> BinanceWSClient<MARKET_TYPE> {
             translator: BinanceCommandTranslator { market_type: MARKET_TYPE },
         }
     }
-    
+
     /// Создает новый WebSocket клиент Binance с использованием прокси
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `tx` - Канал для отправки сообщений
     /// * `url` - Опционально, URL для подключения
     /// * `proxy_string` - Строка конфигурации прокси (например, "socks5://username:password@host:port")
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Self` - Новый экземпляр клиента
-    pub async fn new_with_proxy(tx: std::sync::mpsc::Sender<String>, url: Option<&str>, proxy_string: &str) -> Self {
+    pub async fn new_with_proxy(
+        tx: std::sync::mpsc::Sender<String>,
+        url: Option<&str>,
+        proxy_string: &str,
+    ) -> Self {
         let real_url = match url {
             Some(endpoint) => endpoint,
             None => {
@@ -114,10 +118,10 @@ impl<const MARKET_TYPE: char> BinanceWSClient<MARKET_TYPE> {
                 }
             }
         };
-        
+
         // Устанавливаем переменную окружения для прокси
         std::env::set_var("https_proxy", proxy_string);
-        
+
         let client = BinanceWSClient {
             client: WSClientInternal::connect(
                 EXCHANGE_NAME,
@@ -129,10 +133,10 @@ impl<const MARKET_TYPE: char> BinanceWSClient<MARKET_TYPE> {
             .await,
             translator: BinanceCommandTranslator { market_type: MARKET_TYPE },
         };
-        
+
         // Очищаем переменную окружения, чтобы не влиять на другие соединения
         std::env::remove_var("https_proxy");
-        
+
         client
     }
 }

@@ -1,7 +1,10 @@
-use super::{super::utils::{http_get, http_get_async, http_post_async}, utils::*};
+use super::{
+    super::utils::{http_get, http_get_async, http_post_async},
+    utils::*,
+};
 use crate::error::Result;
-use std::collections::BTreeMap;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 const BASE_URL: &str = "https://fapi.binance.com";
 
@@ -19,28 +22,25 @@ pub struct BinanceLinearRestClient {
 
 impl BinanceLinearRestClient {
     pub fn new(api_key: Option<String>, api_secret: Option<String>, proxy: Option<String>) -> Self {
-        BinanceLinearRestClient { 
-            api_key, 
-            api_secret,
-            proxy,
-        }
+        BinanceLinearRestClient { api_key, api_secret, proxy }
     }
 
     pub async fn get_account_balance(&self, asset: &str) -> Result<String> {
         let endpoint = format!("{}/fapi/v3/balance", BASE_URL);
         let mut params = BTreeMap::new();
-        
+
         // Добавляем recvWindow для Binance API
         params.insert("recvWindow".to_string(), "5000".to_string());
-        
+
         let response = http_get_async(
             &endpoint,
             &mut params,
             self.api_key.as_deref(),
             self.api_secret.as_deref(),
             self.proxy.as_deref(),
-        ).await?;
-        
+        )
+        .await?;
+
         let json: Value = serde_json::from_str(&response)?;
         if let Some(balances) = json.as_array() {
             for balance in balances {
@@ -56,81 +56,143 @@ impl BinanceLinearRestClient {
         Ok("0".to_string())
     }
 
-    pub async fn create_order(&self, symbol: &str, side: &str, mut quantity: f64, price: f64, market_type: &str) -> Result<String> {
+    pub async fn create_order(
+        &self,
+        symbol: &str,
+        side: &str,
+        mut quantity: f64,
+        price: f64,
+        _market_type: &str,
+    ) -> Result<String> {
         let mut params = BTreeMap::new();
-        
+
         // Преобразуем символ в верхний регистр и убираем пробелы
         let normalized_symbol = symbol.trim().to_uppercase();
         params.insert("symbol".to_string(), normalized_symbol.clone());
-        
+
         // Проверка стороны (всегда в верхнем регистре)
         let normalized_side = match side.trim().to_uppercase().as_str() {
             "BUY" => "BUY",
             "SELL" => "SELL",
             _ => {
-                return Err(crate::error::Error(
-                    format!("Неверное значение стороны: {}", side)
-                ));
+                return Err(crate::error::Error(format!("Неверное значение стороны: {}", side)));
             }
         };
         params.insert("side".to_string(), normalized_side.to_string());
-        
+
         // Устанавливаем тип и timeInForce как в успешном запросе
         params.insert("type".to_string(), "LIMIT".to_string());
         params.insert("timeInForce".to_string(), "GTC".to_string());
-        
-        // LOKAUSDT требует целочисленное количество
-        if normalized_symbol == "LOKAUSDT" {
-            // Округляем до целого числа
-            let rounded_quantity = quantity.floor();
-            params.insert("quantity".to_string(), format!("{:.0}", rounded_quantity));
-            
-            // Форматируем цену с 4 знаками после запятой
-            let rounded_price = (price * 10000.0).round() / 10000.0;
-            params.insert("price".to_string(), format!("{:.4}", rounded_price));
-        } else {
-            // Для других пар используем прежнюю логику
-            let (quantity_precision, price_precision, min_qty, step_size) = match normalized_symbol.as_str() {
+
+        // Для всех пар используем единую логику
+        let (quantity_precision, price_precision, min_qty, step_size) =
+            match normalized_symbol.as_str() {
                 "BTCUSDT" => (3, 1, 0.001, 0.001),
                 "ETHUSDT" => (3, 2, 0.001, 0.001),
                 _ => (3, 4, 0.001, 0.001),
             };
-            
-            // Проверка минимального количества
-            if quantity < min_qty {
-                quantity = min_qty;
-            }
-            
-            // Округляем до ближайшего кратного шагу объема
-            let rounded_quantity = (quantity / step_size).floor() * step_size;
-            
-            // Форматируем количество с правильной точностью
-            let formatted_quantity = format!("{:.*}", quantity_precision, rounded_quantity);
-            
-            // Округляем цену до нужной точности
-            let price_factor = 10.0_f64.powi(price_precision as i32);
-            let rounded_price = (price * price_factor).round() / price_factor;
-            let formatted_price = format!("{:.*}", price_precision, rounded_price);
-            
-            params.insert("quantity".to_string(), formatted_quantity);
-            params.insert("price".to_string(), formatted_price);
+
+        // Проверка минимального количества
+        if quantity < min_qty {
+            quantity = min_qty;
         }
-        
+
+        // Округляем до ближайшего кратного шагу объема
+        let rounded_quantity = (quantity / step_size).floor() * step_size;
+
+        // Форматируем количество с правильной точностью
+        let formatted_quantity = format!("{:.*}", quantity_precision, rounded_quantity);
+
+        // Округляем цену до нужной точности
+        let price_factor = 10.0_f64.powi(price_precision as i32);
+        let rounded_price = (price * price_factor).round() / price_factor;
+        let formatted_price = format!("{:.*}", price_precision, rounded_price);
+
+        params.insert("quantity".to_string(), formatted_quantity);
+        params.insert("price".to_string(), formatted_price);
+
         // Увеличиваем recvWindow для предотвращения ошибок подписи
         params.insert("recvWindow".to_string(), "10000".to_string());
-        
+
         // URL точно как в успешном запросе
         let endpoint = format!("{}/fapi/v1/order", BASE_URL);
-        
+
         match http_post_async(
             &endpoint,
             &mut params,
             self.api_key.as_deref(),
             self.api_secret.as_deref(),
             self.proxy.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok(response) => Ok(response),
-            Err(e) => Err(e)
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn create_market_order(
+        &self,
+        symbol: &str,
+        side: &str,
+        mut quantity: f64,
+    ) -> Result<String> {
+        let mut params = BTreeMap::new();
+
+        // Преобразуем символ в верхний регистр и убираем пробелы
+        let normalized_symbol = symbol.trim().to_uppercase();
+        params.insert("symbol".to_string(), normalized_symbol.clone());
+
+        // Проверка стороны (всегда в верхнем регистре)
+        let normalized_side = match side.trim().to_uppercase().as_str() {
+            "BUY" => "BUY",
+            "SELL" => "SELL",
+            _ => {
+                return Err(crate::error::Error(format!("Неверное значение стороны: {}", side)));
+            }
+        };
+        params.insert("side".to_string(), normalized_side.to_string());
+
+        // Устанавливаем тип как MARKET для рыночного ордера
+        params.insert("type".to_string(), "MARKET".to_string());
+
+        // Получаем параметры точности для символа
+        let (quantity_precision, _price_precision, min_qty, step_size) =
+            match normalized_symbol.as_str() {
+                "BTCUSDT" => (3, 1, 0.001, 0.001),
+                "ETHUSDT" => (3, 2, 0.001, 0.001),
+                _ => (3, 4, 0.001, 0.001),
+            };
+
+        // Проверка минимального количества
+        if quantity < min_qty {
+            quantity = min_qty;
+        }
+
+        // Округляем до ближайшего кратного шагу объема
+        let rounded_quantity = (quantity / step_size).floor() * step_size;
+
+        // Форматируем количество с правильной точностью
+        let formatted_quantity = format!("{:.*}", quantity_precision, rounded_quantity);
+        params.insert("quantity".to_string(), formatted_quantity);
+
+        // Увеличиваем recvWindow для предотвращения ошибок подписи
+        params.insert("recvWindow".to_string(), "10000".to_string());
+
+        // URL для создания ордера
+        let endpoint = format!("{}/fapi/v1/order", BASE_URL);
+
+        match http_post_async(
+            &endpoint,
+            &mut params,
+            self.api_key.as_deref(),
+            self.api_secret.as_deref(),
+            self.proxy.as_deref(),
+        )
+        .await
+        {
+            Ok(response) => Ok(response),
+            Err(e) => Err(e),
         }
     }
 

@@ -2,9 +2,8 @@ use std::{
     io::prelude::*,
     num::NonZeroU32,
     sync::{
-        atomic::{AtomicIsize, Ordering, AtomicBool},
-        Arc,
-        Mutex,
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicIsize, Ordering},
     },
     time::Duration,
 };
@@ -105,19 +104,32 @@ impl<H: MessageHandler> WSClientInternal<H> {
             }
         }
 
+        // Специальная обработка для Binance - добавляем небольшие задержки между командами
+        let delay =
+            if self.exchange == "binance" { Some(Duration::from_millis(100)) } else { None };
+
         for command in commands {
             debug!("{}", command);
             if self.command_tx.send(Message::Text(command.to_string())).await.is_err() {
                 break; // break the loop if there is no receiver
             }
+
+            // Если это Binance, добавляем небольшую задержку между командами
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
         }
     }
 
     // Добавляем приватный метод для переподключения
-    async fn reconnect(&self, _handler: H, _tx: std::sync::mpsc::Sender<String>) -> Option<tokio::sync::mpsc::Receiver<Message>> {
+    async fn reconnect(
+        &self,
+        _handler: H,
+        _tx: std::sync::mpsc::Sender<String>,
+    ) -> Option<tokio::sync::mpsc::Receiver<Message>> {
         // Устанавливаем флаг, что переподключение в процессе
         self.reconnect_in_progress.store(true, Ordering::SeqCst);
-        
+
         // Отменяем старую пинг-задачу, если она существует
         {
             let mut guard = self.ping_task_handle.lock().unwrap();
@@ -126,20 +138,30 @@ impl<H: MessageHandler> WSClientInternal<H> {
                 handle.abort();
             }
         }
-        
+
+        // Небольшая задержка перед первой попыткой переподключения
+        // Это даст время отработать всем операциям отмены пинг-задачи
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
         // Максимальное количество попыток переподключения
         const MAX_RECONNECT_ATTEMPTS: u32 = 5;
         // Начальная задержка в секундах
         let mut backoff_time = 2;
-        
+
+        // Для Binance используем специальный режим переподключения с большими интервалами
+        let is_binance = self.exchange == "binance";
+        if is_binance {
+            backoff_time = 5; // Увеличиваем начальное время ожидания для Binance
+        }
+
         for attempt in 1..=MAX_RECONNECT_ATTEMPTS {
             info!(
-                "Reconnecting to {} (attempt {}/{}), waiting {} seconds...", 
+                "Reconnecting to {} (attempt {}/{}), waiting {} seconds...",
                 self.url, attempt, MAX_RECONNECT_ATTEMPTS, backoff_time
             );
-            
+
             tokio::time::sleep(Duration::from_secs(backoff_time)).await;
-            
+
             // Пытаемся переподключиться
             match super::connect_async::connect_async(&self.url, None).await {
                 Ok((message_rx, new_command_tx)) => {
@@ -150,45 +172,61 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         let self_mut = self as *const Self as *mut Self;
                         (*self_mut).command_tx = new_command_tx;
                     }
-                    
+
                     info!("Successfully reconnected to {} after {} attempts", self.url, attempt);
-                    
+
                     // Восстанавливаем подписки
                     let subscriptions = {
                         let guard = self.active_subscriptions.lock().unwrap();
                         guard.clone()
                     };
-                    
+
                     if !subscriptions.is_empty() {
                         info!("Restoring {} subscriptions...", subscriptions.len());
+
+                        // Для Binance добавляем больший интервал между восстановлением подписок
+                        let delay = if is_binance {
+                            Duration::from_millis(300)
+                        } else {
+                            Duration::from_millis(100)
+                        };
+
                         for command in &subscriptions {
                             debug!("Restoring subscription: {}", command);
-                            if let Err(err) = self.command_tx.send(Message::Text(command.clone())).await {
+                            if let Err(err) =
+                                self.command_tx.send(Message::Text(command.clone())).await
+                            {
                                 error!("Failed to restore subscription: {}", err);
                             }
-                            // Небольшая задержка между подписками, чтобы не перегрузить сервер
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            // Задержка между подписками
+                            tokio::time::sleep(delay).await;
                         }
                     }
-                    
+
                     // Запускаем новую пинг-задачу после успешного переподключения
                     let num_unanswered_ping = Arc::new(AtomicIsize::new(0));
                     self.start_ping_task(&_handler, num_unanswered_ping);
-                    
+
                     self.reconnect_in_progress.store(false, Ordering::SeqCst);
                     return Some(message_rx);
                 }
                 Err(err) => {
-                    error!("Failed to reconnect to {} (attempt {}/{}): {}", 
-                           self.url, attempt, MAX_RECONNECT_ATTEMPTS, err);
-                    
+                    error!(
+                        "Failed to reconnect to {} (attempt {}/{}): {}",
+                        self.url, attempt, MAX_RECONNECT_ATTEMPTS, err
+                    );
+
                     // Экспоненциальное увеличение задержки (с ограничением)
-                    backoff_time = std::cmp::min(backoff_time * 2, 60); // Максимум 60 секунд
+                    let max_backoff = if is_binance { 120 } else { 60 }; // Для Binance увеличиваем максимальную задержку
+                    backoff_time = std::cmp::min(backoff_time * 2, max_backoff);
                 }
             }
         }
-        
-        error!("Failed to reconnect to {} after {} attempts, giving up", self.url, MAX_RECONNECT_ATTEMPTS);
+
+        error!(
+            "Failed to reconnect to {} after {} attempts, giving up",
+            self.url, MAX_RECONNECT_ATTEMPTS
+        );
         self.reconnect_in_progress.store(false, Ordering::SeqCst);
         None
     }
@@ -198,26 +236,36 @@ impl<H: MessageHandler> WSClientInternal<H> {
         if let Some((msg, interval)) = handler.get_ping_msg_and_interval() {
             // Создаем канал для отслеживания состояния соединения
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-            
+
             // send heartbeat periodically
             let command_tx_clone = self.command_tx.clone();
             let num_unanswered_ping_clone = num_unanswered_ping.clone();
-            
+
             // Добавляем механизм проверки состояния соединения
             let url_clone = self.url.clone();
             let exchange_clone = self.exchange;
             // Используем Arc для безопасного доступа к AtomicBool между потоками
             let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
-            
+
             let ping_task = tokio::task::spawn(async move {
                 let mut timer = {
                     let duration = Duration::from_secs(interval / 2 + 1);
                     tokio::time::interval(duration)
                 };
-                
+
                 // Таймер для проверки состояния соединения
-                let mut health_check_timer = tokio::time::interval(Duration::from_secs(interval * 2));
-                
+                let mut health_check_timer =
+                    tokio::time::interval(Duration::from_secs(interval * 2));
+
+                // Специальный обработчик для Binance - более короткий интервал проверки
+                let is_binance = exchange_clone == "binance";
+                let mut binance_check_timer = if is_binance {
+                    tokio::time::interval(Duration::from_secs(30))
+                } else {
+                    // Для других бирж используем тот же интервал, но результат игнорируем
+                    tokio::time::interval(Duration::from_secs(60))
+                };
+
                 loop {
                     tokio::select! {
                         now = timer.tick() => {
@@ -230,7 +278,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                 num_unanswered_ping_clone.fetch_add(1, Ordering::SeqCst);
                             }
                         }
-                        
+
                         _ = health_check_timer.tick() => {
                             // Проверяем количество неотвеченных пингов
                             let unanswered = num_unanswered_ping_clone.load(Ordering::Acquire);
@@ -239,7 +287,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                     "Too many unanswered pings ({}) for {}, connection might be dead",
                                     unanswered, url_clone
                                 );
-                                
+
                                 // Отправляем сообщение о закрытии соединения, чтобы инициировать переподключение
                                 if let Err(err) = command_tx_clone.send(Message::Close(None)).await {
                                     error!("Failed to send close message: {}", err);
@@ -250,7 +298,28 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                 }
                             }
                         }
-                        
+
+                        _ = binance_check_timer.tick() => {
+                            // Проверка только для Binance
+                            if is_binance {
+                                let unanswered = num_unanswered_ping_clone.load(Ordering::Acquire);
+                                if unanswered > 1 && !reconnect_in_progress_clone.load(Ordering::Acquire) {
+                                    warn!(
+                                        "Binance connection health check: {} unanswered pings for {}",
+                                        unanswered, url_clone
+                                    );
+
+                                    // Для Binance отправляем Pong вместо Close для проверки соединения
+                                    if let Err(err) = command_tx_clone.send(Message::Pong(Vec::new())).await {
+                                        error!("Failed to send pong message to Binance: {}", err);
+                                        break;
+                                    } else {
+                                        debug!("Sent pong message to Binance to check connection");
+                                    }
+                                }
+                            }
+                        }
+
                         // Проверяем сигнал остановки
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
@@ -260,36 +329,42 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         }
                     }
                 }
-                
+
                 info!("Ping task for {} stopped", exchange_clone);
             });
-            
+
             // Сохраняем handle пинг-задачи и sender для отмены
             {
                 let mut guard = self.ping_task_handle.lock().unwrap();
                 *guard = Some(ping_task);
             }
-            
+
             // Создаем отдельную задачу для мониторинга состояния переподключения
             let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
             let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
-            
+
             // Запускаем задачу, которая будет следить за флагом reconnect_in_progress
             // и отправлять сигнал остановки пинг-задаче при необходимости
             tokio::task::spawn(async move {
                 let mut check_interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     check_interval.tick().await;
-                    
+
                     // Если началось переподключение, отправляем сигнал остановки
                     if reconnect_in_progress_clone.load(Ordering::Acquire) {
                         let mut guard = shutdown_tx.lock().unwrap();
                         if let Some(tx) = guard.take() {
-                            info!("Sending shutdown signal to ping task for {} due to reconnection", exchange_clone);
+                            info!(
+                                "Sending shutdown signal to ping task for {} due to reconnection",
+                                exchange_clone
+                            );
                             if let Err(err) = tx.send(true) {
                                 error!("Failed to send shutdown signal to ping task: {}", err);
                             }
                             // Выходим из цикла после отправки сигнала
+                            break;
+                        } else {
+                            // Сигнал уже был отправлен или канал закрыт, выходим
                             break;
                         }
                     }
@@ -305,12 +380,18 @@ impl<H: MessageHandler> WSClientInternal<H> {
         };
 
         let num_unanswered_ping = Arc::new(AtomicIsize::new(0)); // for debug only
-        
+
         // Создаем клон handler для использования в переподключении
         let handler_clone = unsafe { std::ptr::read(&handler as *const H) };
-        
+
         // Запускаем пинг только один раз
         self.start_ping_task(&handler, num_unanswered_ping.clone());
+
+        // Для Binance добавляем дополнительную диагностику
+        let is_binance = self.exchange == "binance";
+        if is_binance {
+            info!("Starting WebSocket connection for Binance with special handling");
+        }
 
         // Основной цикл с поддержкой переподключения
         'connection_loop: loop {
@@ -348,13 +429,21 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         // binance server will send a ping frame every 3 or 5 minutes
                         debug!(
                             "Received a ping frame: {} from {}",
-                            std::str::from_utf8(&resp).unwrap(),
+                            std::str::from_utf8(&resp).unwrap_or("non-utf8"),
                             self.url,
                         );
                         if self.exchange == "binance" {
                             // send a pong frame
                             debug!("Sending a pong frame to {}", self.url);
-                            _ = self.command_tx.send(Message::Pong(Vec::new())).await;
+                            if let Err(err) = self.command_tx.send(Message::Pong(Vec::new())).await
+                            {
+                                error!("Failed to send pong response to Binance: {}", err);
+                                // Если не можем отправить pong, соединение возможно мертво
+                                warn!("Could not send pong to Binance, connection might be dead");
+                                break; // Выходим из цикла, чтобы вызвать переподключение
+                            }
+                            // Сбрасываем счетчик неотвеченных пингов при получении ping от сервера
+                            num_unanswered_ping.store(0, Ordering::Release);
                         }
                         None
                     }
@@ -362,7 +451,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         num_unanswered_ping.store(0, Ordering::Release);
                         debug!(
                             "Received a pong frame: {} from {}, reset num_unanswered_ping to {}",
-                            std::str::from_utf8(&resp).unwrap(),
+                            std::str::from_utf8(&resp).unwrap_or("non-utf8"),
                             self.exchange,
                             num_unanswered_ping.load(Ordering::Acquire)
                         );
@@ -379,9 +468,19 @@ impl<H: MessageHandler> WSClientInternal<H> {
                             }
                             None => warn!("Received a close message without CloseFrame"),
                         }
-                        
+
                         // Вместо паники пытаемся переподключиться
                         warn!("Connection closed, attempting to reconnect...");
+
+                        // Отменяем пинг-задачу здесь, перед выходом из цикла сообщений
+                        {
+                            let mut guard = self.ping_task_handle.lock().unwrap();
+                            if let Some(handle) = guard.take() {
+                                info!("Aborting ping task due to connection close");
+                                handle.abort();
+                            }
+                        }
+
                         break;
                     }
                 };
@@ -406,21 +505,34 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                 num_unanswered_ping.load(Ordering::Acquire)
                             );
                         }
-                        MiscMessage::Reconnect => break, // Выходим из внутреннего цикла для переподключения
+                        MiscMessage::Reconnect => {
+                            info!("Received explicit reconnect request from message handler");
+                            break; // Выходим из внутреннего цикла для переподключения
+                        }
                         MiscMessage::Other => (), // ignore
                     }
                 }
             }
-            
-            // Если мы вышли из цикла сообщений, пытаемся переподключиться
+
+            // Проверяем, была ли закрыта очередь сообщений
             if !self.reconnect_in_progress.load(Ordering::SeqCst) {
+                info!("Message queue closed, attempting to reconnect...");
+
                 // Создаем новый клон handler для переподключения
-                let handler_clone_for_reconnect = unsafe { std::ptr::read(&handler_clone as *const H) };
-                
+                let handler_clone_for_reconnect =
+                    unsafe { std::ptr::read(&handler_clone as *const H) };
+
                 // Пытаемся переподключиться
-                if let Some(new_message_rx) = self.reconnect(handler_clone_for_reconnect, tx.clone()).await {
+                if let Some(new_message_rx) =
+                    self.reconnect(handler_clone_for_reconnect, tx.clone()).await
+                {
                     // Если переподключение успешно, обновляем message_rx и продолжаем цикл
                     message_rx = new_message_rx;
+
+                    if is_binance {
+                        info!("Successfully reconnected to Binance, continuing operations");
+                    }
+
                     continue 'connection_loop;
                 } else {
                     // Если переподключение не удалось после нескольких попыток, выходим
@@ -429,10 +541,13 @@ impl<H: MessageHandler> WSClientInternal<H> {
                 }
             } else {
                 // Если переподключение уже в процессе, ждем немного и выходим
+                warn!("Reconnection already in progress, waiting before exiting...");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 break 'connection_loop;
             }
         }
+
+        info!("WebSocket client for {} has stopped", self.exchange);
     }
 
     pub async fn close(&self) {
@@ -444,7 +559,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                 handle.abort();
             }
         }
-        
+
         // close the websocket connection and break the while loop in run()
         _ = self.command_tx.send(Message::Close(None)).await;
     }

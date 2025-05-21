@@ -2,6 +2,7 @@
 mod utils;
 
 pub(super) mod binance;
+pub(super) mod bingx;
 pub(super) mod bitfinex;
 pub(super) mod bitget;
 pub(super) mod bithumb;

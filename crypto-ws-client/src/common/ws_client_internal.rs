@@ -339,6 +339,21 @@ impl<H: MessageHandler> WSClientInternal<H> {
                 *guard = Some(ping_task);
             }
 
+            // Добавляем инициализирующий Pong сразу после создания пинг-задачи для Binance
+            // Это помогает установить корректное соединение сразу, особенно для user_data каналов
+            if self.exchange == "binance" {
+                let cmd_tx = self.command_tx.clone();
+                tokio::spawn(async move {
+                    // Даем немного времени на установление соединения
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    debug!("Sending initial pong to Binance after connection setup");
+                    // Отправляем пустой Pong фрейм для инициализации соединения
+                    if let Err(err) = cmd_tx.send(Message::Pong(Vec::new())).await {
+                        warn!("Failed to send initial pong to Binance: {}", err);
+                    }
+                });
+            }
+
             // Создаем отдельную задачу для мониторинга состояния переподключения
             let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
             let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
@@ -435,15 +450,21 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         if self.exchange == "binance" {
                             // send a pong frame
                             debug!("Sending a pong frame to {}", self.url);
+                            // Для Binance обязательно отправляем пустой Pong фрейм
+                            // и сбрасываем счетчик неотвеченных пингов
                             if let Err(err) = self.command_tx.send(Message::Pong(Vec::new())).await
                             {
                                 error!("Failed to send pong response to Binance: {}", err);
                                 // Если не можем отправить pong, соединение возможно мертво
                                 warn!("Could not send pong to Binance, connection might be dead");
                                 break; // Выходим из цикла, чтобы вызвать переподключение
+                            } else {
+                                // Явно обнуляем счетчик при успешной отправке Pong
+                                num_unanswered_ping.store(0, Ordering::Release);
+                                debug!(
+                                    "Successfully sent pong response to Binance ping, reset unanswered count to 0"
+                                );
                             }
-                            // Сбрасываем счетчик неотвеченных пингов при получении ping от сервера
-                            num_unanswered_ping.store(0, Ordering::Release);
                         }
                         None
                     }

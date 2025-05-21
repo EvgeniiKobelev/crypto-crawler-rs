@@ -206,6 +206,10 @@ macro_rules! impl_ws_client_trait {
                     .await
             }
 
+            async fn subscribe_user_data(&self, _listen_key: &str) {
+                panic!("{} does NOT support the user_data websocket channel", EXCHANGE_NAME);
+            }
+
             async fn subscribe(&self, topics: &[(String, String)]) {
                 let commands = self.translator.translate_to_commands(true, topics);
                 self.client.send(&commands).await;

@@ -99,6 +99,16 @@ pub trait WSClient {
     /// and CoinbasePro.
     async fn subscribe_candlestick(&self, symbol_interval_list: &[(String, usize)]);
 
+    /// Подписка на канал user_data для приватных данных аккаунта
+    ///
+    /// Данный метод доступен только на некоторых биржах, таких как Binance.
+    ///
+    /// Для Binance требуется предварительно получить listenKey через REST API
+    /// и передать его в этот метод.
+    async fn subscribe_user_data(&self, listen_key: &str) {
+        unimplemented!("subscribe_user_data not implemented for this exchange");
+    }
+
     /// Subscribe to multiple topics.
     ///
     /// topic = channel + symbol, a topic will be converted to an

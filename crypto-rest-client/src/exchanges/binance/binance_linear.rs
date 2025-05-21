@@ -25,6 +25,25 @@ impl BinanceLinearRestClient {
         BinanceLinearRestClient { api_key, api_secret, proxy }
     }
 
+    /// Fetches current exchange trading rules and symbol information.
+    ///
+    /// Corresponds to endpoint `/fapi/v1/exchangeInfo`.
+    ///
+    /// For example:
+    ///
+    /// - <https://fapi.binance.com/fapi/v1/exchangeInfo>
+    pub async fn get_exchange_info(&self) -> Result<String> {
+        let endpoint = format!("{}/fapi/v1/exchangeInfo", BASE_URL);
+        let mut params = BTreeMap::new(); // No parameters needed for this endpoint
+
+        // No authentication needed for this public endpoint as per Binance docs
+        // for /fapi/v1/exchangeInfo
+        match http_get_async(&endpoint, &mut params, None, None, self.proxy.as_deref()).await {
+            Ok(response) => Ok(response),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_account_balance(&self, asset: &str) -> Result<String> {
         let endpoint = format!("{}/fapi/v3/balance", BASE_URL);
         let mut params = BTreeMap::new();

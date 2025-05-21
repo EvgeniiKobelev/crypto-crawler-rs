@@ -193,6 +193,41 @@ impl<const URL: char> WSClient for BinanceWSClient<URL> {
         self.client.send(&commands).await;
     }
 
+    /// Подписка на канал user_data для получения приватных обновлений аккаунта
+    ///
+    /// # Аргументы
+    ///
+    /// * `listen_key` - Ключ, полученный через REST API метод GET /api/v3/userDataStream
+    ///
+    /// # Пример
+    ///
+    /// ```no_run
+    /// use crypto_ws_client::{BinanceSpotWSClient, WSClient};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let (tx, rx) = std::sync::mpsc::channel();
+    ///     let ws_client = BinanceSpotWSClient::new(tx, None).await;
+    ///     
+    ///     // listenKey нужно получить через REST API запрос
+    ///     let listen_key = "your_listen_key_from_rest_api";
+    ///     ws_client.subscribe_user_data(listen_key).await;
+    ///     
+    ///     ws_client.run().await;
+    /// }
+    /// ```
+    async fn subscribe_user_data(&self, listen_key: &str) {
+        let command = format!(r#"{{"id":9527,"method":"SUBSCRIBE","params":["{listen_key}"]}}"#);
+        debug!("Subscribing to user_data with command: {}", command);
+
+        // Не используем PING команду, она не поддерживается в Binance WebSocket API
+        // Просто добавим небольшую задержку перед подпиской для стабилизации соединения
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+        // Отправляем команду подписки
+        self.client.send(&[command]).await;
+    }
+
     async fn subscribe(&self, topics: &[(String, String)]) {
         let commands = self.translator.translate_to_commands(true, topics);
         self.client.send(&commands).await;
@@ -293,6 +328,11 @@ impl MessageHandler for BinanceMessageHandler {
         // server does not receive a pong frame back from the connection within
         // a 10 minute period, the connection will be disconnected. Unsolicited
         // pong frames are allowed. Send unsolicited pong frames per 3 minutes
+
+        // Отправляем пустой Pong каждые 180 секунд (в соответствии с общей рекомендацией Binance "per 3 minutes").
+        // Ранее для user_data каналов мог использоваться более частый интервал (например, 60с)
+        // для специфических требований по стабильности и избегания "unanswered pings" на тех потоках.
+        // Для общих потоков данных используется стандартный интервал в 180 секунд.
         Some((Message::Pong(Vec::new()), 180))
     }
 }

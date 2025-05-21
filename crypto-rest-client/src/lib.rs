@@ -7,6 +7,7 @@ pub use exchanges::{
         binance_inverse::BinanceInverseRestClient, binance_linear::BinanceLinearRestClient,
         binance_option::BinanceOptionRestClient, binance_spot::BinanceSpotRestClient,
     },
+    bingx::{BingxSpotRestClient, BingxSwapRestClient},
     bitfinex::BitfinexRestClient,
     bitget::*,
     bithumb::*,
@@ -44,6 +45,7 @@ fn fetch_l2_snapshot_internal(
 ) -> Result<String> {
     let ret = match exchange {
         "binance" => exchanges::binance::fetch_l2_snapshot(market_type, symbol),
+        "bingx" => exchanges::bingx::fetch_l2_snapshot(market_type, symbol),
         "bitfinex" => exchanges::bitfinex::BitfinexRestClient::fetch_l2_snapshot(symbol),
         "bitget" => exchanges::bitget::fetch_l2_snapshot(market_type, symbol),
         "bithumb" => exchanges::bithumb::BithumbRestClient::fetch_l2_snapshot(symbol),
@@ -99,6 +101,7 @@ pub fn fetch_open_interest(
 ) -> Result<String> {
     let ret = match exchange {
         "binance" => exchanges::binance::fetch_open_interest(market_type, symbol.unwrap()),
+        "bingx" => exchanges::bingx::fetch_open_interest(market_type, symbol.unwrap()),
         "bitget" => exchanges::bitget::fetch_open_interest(market_type, symbol.unwrap()),
         "bybit" => exchanges::bybit::BybitRestClient::fetch_open_interest(symbol.unwrap()),
         "bitz" => exchanges::bitz::fetch_open_interest(market_type, symbol),

@@ -538,4 +538,106 @@ impl BybitRestClient {
         }
         Ok(markets)
     }
+
+    pub async fn closed_pnl(
+        &self,
+        category: &str,
+        symbol: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        // Проверка наличия прокси
+        if self._proxy.is_none() {
+            return Err(crate::error::Error("Прокси не указан".to_string()));
+        }
+
+        // Проверка API ключа и секрета
+        if self._api_key.is_none() || self._api_secret.is_none() {
+            return Err(crate::error::Error("API ключ или секрет не указаны".to_string()));
+        }
+
+        let api_key = self._api_key.clone().unwrap();
+        let api_secret = self._api_secret.clone().unwrap();
+        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        let recv_window = "5000";
+
+        // Формируем параметры запроса
+        let mut params = vec![format!("category={}", category)];
+
+        // Добавляем опциональные параметры, если они указаны
+        if let Some(s) = symbol {
+            params.push(format!("symbol={}", s));
+        }
+
+        if let Some(st) = start_time {
+            params.push(format!("startTime={}", st));
+        }
+
+        if let Some(et) = end_time {
+            params.push(format!("endTime={}", et));
+        }
+
+        if let Some(lim) = limit {
+            params.push(format!("limit={}", lim));
+        }
+
+        if let Some(cur) = cursor {
+            params.push(format!("cursor={}", cur));
+        }
+
+        let query_string = params.join("&");
+
+        // Формируем строку для подписи: {timestamp}{api_key}{recv_window}{query_string}
+        let signature_payload = format!("{}{}{}{}", timestamp, api_key, recv_window, query_string);
+
+        // Создаем HMAC подпись
+        let signature = Self::hmac_sha256(api_secret, signature_payload);
+
+        // Конструируем URL с параметрами
+        let url = format!("{}/v5/position/closed-pnl?{}", BASE_URL, query_string);
+
+        let proxy = reqwest::Proxy::http(self._proxy.clone().unwrap())?;
+        let client =
+            reqwest::Client::builder().timeout(Duration::from_secs(15)).proxy(proxy).build()?;
+
+        let response = client
+            .get(&url)
+            .header("X-BAPI-API-KEY", api_key)
+            .header("X-BAPI-TIMESTAMP", timestamp)
+            .header("X-BAPI-RECV-WINDOW", recv_window)
+            .header("X-BAPI-SIGN", signature)
+            .send()
+            .await?;
+
+        // Проверяем статус ответа
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await?;
+            return Err(crate::error::Error(format!(
+                "Ошибка API Bybit при получении закрытых позиций: статус {}, ответ: {}",
+                status, error_text
+            )));
+        }
+
+        let body: Value = response.json().await?;
+
+        // Отладочный вывод полного ответа
+        log::debug!("Bybit API closed_pnl response: {}", body.to_string());
+
+        // Проверяем ответ API на ошибки
+        if let Some(ret_code) = body["retCode"].as_i64() {
+            if ret_code != 0 {
+                let ret_msg = body["retMsg"].as_str().unwrap_or("Неизвестная ошибка API Bybit");
+                return Err(crate::error::Error(format!(
+                    "Ошибка API Bybit при получении закрытых позиций: код {}, сообщение: {}",
+                    ret_code, ret_msg
+                )));
+            }
+        }
+
+        // Возвращаем список закрытых позиций
+        Ok(body["result"]["list"].as_array().unwrap_or(&Vec::new()).clone())
+    }
 }

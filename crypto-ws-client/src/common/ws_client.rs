@@ -105,8 +105,18 @@ pub trait WSClient {
     ///
     /// Для Binance требуется предварительно получить listenKey через REST API
     /// и передать его в этот метод.
-    async fn subscribe_user_data(&self, listen_key: &str) {
+    async fn subscribe_user_data(&self, _listen_key: &str) {
         unimplemented!("subscribe_user_data not implemented for this exchange");
+    }
+
+    /// Подписка на обновления баланса аккаунта
+    ///
+    /// Данный метод доступен на некоторых биржах, таких как Binance и MEXC.
+    ///
+    /// Требуется предварительно получить listenKey через REST API
+    /// и передать его в этот метод.
+    async fn subscribe_account_balance(&self, _listen_key: &str) {
+        unimplemented!("subscribe_account_balance not implemented for this exchange");
     }
 
     /// Subscribe to multiple topics.

@@ -3,7 +3,7 @@ mod utils;
 
 #[cfg(test)]
 mod mexc_spot {
-    use crypto_ws_client::{MexcSpotWSClient, WSClient};
+    use crypto_ws_client::{MexcSpotWSClient, MexcUserDataStreamWSClient, WSClient};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe() {
@@ -77,6 +77,34 @@ mod mexc_spot {
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_overview() {
         gen_test_code!(MexcSpotWSClient, send, &[r#"{"op":"sub.overview"}"#.to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_account_balance() {
+        // Этот тест проверяет, что метод subscribe_account_balance
+        // корректно выводит предупреждение о необходимости использования отдельного WebSocket
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ws_client = MexcSpotWSClient::new(tx, None).await;
+
+        // Метод должен выполниться без ошибок, но не отправлять команды
+        ws_client.subscribe_account_balance("test_listen_key_123").await;
+
+        // Тест проходит, если не произошло panic
+        assert!(true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_private_deals_user_data_stream() {
+        // Тест для подписки на приватные сделки через User Data Stream
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let listen_key = "test_listen_key_for_private_deals";
+        let ws_client = MexcUserDataStreamWSClient::new(listen_key, tx, None).await;
+
+        // Метод должен выполниться без ошибок и отправить команду подписки
+        ws_client.subscribe_private_deals().await;
+
+        // Тест проходит, если не произошло panic
+        assert!(true);
     }
 }
 

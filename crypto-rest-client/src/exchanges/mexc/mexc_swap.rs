@@ -1,5 +1,5 @@
 use super::super::utils::http_get;
-use crate::error::Result;
+use crate::{error::Result, exchanges::utils::http_get_async};
 use std::collections::BTreeMap;
 
 const BASE_URL: &str = "https://contract.mexc.com";
@@ -32,7 +32,24 @@ impl MexcSwapRestClient {
     /// For example: <https://contract.mexc.com/api/v1/contract/depth/BTC_USDT?limit=2000>
     ///
     /// Rate limit: 20 times /2 seconds
-    pub fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
-        gen_api!(format!("/api/v1/contract/depth/{symbol}?limit=2000"))
+    pub async fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
+        let endpoint = format!("{}/api/v1/contract/depth", BASE_URL);
+        let mut params = BTreeMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("limit".to_string(), "2000".to_string());
+
+        http_get_async(&endpoint, &mut params, None, None, None).await
+    }
+
+    /// Получить listen_key для WebSocket приватных данных (Swap API).
+    ///
+    /// # Примечания
+    /// - MEXC Swap может использовать другой API эндпоинт для listen_key
+    /// - Требует дальнейшего исследования документации MEXC Swap API
+    pub async fn get_listen_key(&self) -> Result<String> {
+        Err(crate::error::Error(
+            "get_listen_key для MEXC Swap пока не реализован - требуется исследование API"
+                .to_string(),
+        ))
     }
 }

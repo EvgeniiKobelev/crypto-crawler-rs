@@ -23,7 +23,7 @@ impl BinanceOptionRestClient {
     /// 500 recent trades are returned.
     ///
     /// For example: <https://voptions.binance.com/options-api/v1/public/market/trades?symbol=BTC-210129-40000-C&limit=500&t=1609956688000>
-    pub fn fetch_trades(symbol: &str, start_time: Option<u64>) -> Result<String> {
+    pub async fn fetch_trades(symbol: &str, start_time: Option<u64>) -> Result<String> {
         check_symbol(symbol);
         let t = start_time;
         gen_api_binance!(format!("/vapi/v1/trades?symbol={symbol}&limit=500"), t)
@@ -31,8 +31,10 @@ impl BinanceOptionRestClient {
 
     /// Get a Level2 snapshot of orderbook.
     ///
-    /// For example: <https://vapi.binance.com/vapi/v1/depth?symbol=BTC-211001-30000-P&limit=1000>
-    pub fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
+    /// Equivalent to `/eapi/v1/depth` with `limit=1000`
+    ///
+    /// For example: <https://eapi.binance.com/eapi/v1/depth?symbol=BTC-220624-50000-C&limit=1000>
+    pub async fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
         check_symbol(symbol);
         let symbol = Some(symbol);
         let limit = Some(1000);

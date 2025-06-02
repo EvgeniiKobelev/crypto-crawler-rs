@@ -42,7 +42,7 @@ macro_rules! gen_api_binance {
                     params.insert(stringify!($param_name).to_string(), param_name.to_string());
                 }
             )*
-            let ret = http_get(format!("{}{}",BASE_URL, $path).as_str(), &params);
+            let ret = crate::exchanges::utils::http_get_async(format!("{}{}",BASE_URL, $path).as_str(), &mut params, None, None, None).await;
             match ret {
                 Ok(resp) => check_code_in_body(resp),
                 Err(_) => ret,

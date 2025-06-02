@@ -38,14 +38,14 @@ use error::Result;
 use log::*;
 use std::time::{Duration, SystemTime};
 
-fn fetch_l2_snapshot_internal(
+async fn fetch_l2_snapshot_internal(
     exchange: &str,
     market_type: MarketType,
     symbol: &str,
 ) -> Result<String> {
     let ret = match exchange {
-        "binance" => exchanges::binance::fetch_l2_snapshot(market_type, symbol),
-        "bingx" => exchanges::bingx::fetch_l2_snapshot(market_type, symbol),
+        "binance" => exchanges::binance::fetch_l2_snapshot(market_type, symbol).await,
+        "bingx" => exchanges::bingx::fetch_l2_snapshot(market_type, symbol).await,
         "bitfinex" => exchanges::bitfinex::BitfinexRestClient::fetch_l2_snapshot(symbol),
         "bitget" => exchanges::bitget::fetch_l2_snapshot(market_type, symbol),
         "bithumb" => exchanges::bithumb::BithumbRestClient::fetch_l2_snapshot(symbol),
@@ -61,7 +61,7 @@ fn fetch_l2_snapshot_internal(
         "huobi" => exchanges::huobi::fetch_l2_snapshot(market_type, symbol),
         "kraken" => exchanges::kraken::fetch_l2_snapshot(market_type, symbol),
         "kucoin" => exchanges::kucoin::fetch_l2_snapshot(market_type, symbol),
-        "mexc" => exchanges::mexc::fetch_l2_snapshot(market_type, symbol),
+        "mexc" => exchanges::mexc::fetch_l2_snapshot(market_type, symbol).await,
         "okx" => exchanges::okx::OkxRestClient::fetch_l2_snapshot(symbol),
         "zb" => exchanges::zb::fetch_l2_snapshot(market_type, symbol),
         "zbg" => exchanges::zbg::fetch_l2_snapshot(market_type, symbol),
@@ -94,14 +94,14 @@ pub fn fetch_l3_snapshot_internal(
 /// Fetch open interest.
 ///
 /// `symbol` None means fetch all symbols.
-pub fn fetch_open_interest(
+pub async fn fetch_open_interest(
     exchange: &str,
     market_type: MarketType,
     symbol: Option<&str>,
 ) -> Result<String> {
     let ret = match exchange {
-        "binance" => exchanges::binance::fetch_open_interest(market_type, symbol.unwrap()),
-        "bingx" => exchanges::bingx::fetch_open_interest(market_type, symbol.unwrap()),
+        "binance" => exchanges::binance::fetch_open_interest(market_type, symbol.unwrap()).await,
+        "bingx" => exchanges::bingx::fetch_open_interest(market_type, symbol.unwrap()).await,
         "bitget" => exchanges::bitget::fetch_open_interest(market_type, symbol.unwrap()),
         "bybit" => exchanges::bybit::BybitRestClient::fetch_open_interest(symbol.unwrap()),
         "bitz" => exchanges::bitz::fetch_open_interest(market_type, symbol),
@@ -134,19 +134,6 @@ pub fn fetch_long_short_ratio(
         Ok(s) => Ok(s.trim().to_string()),
         Err(_) => ret,
     }
-}
-
-/// Fetch level2 orderbook snapshot.
-///
-/// `retry` None means no retry; Some(0) means retry unlimited times; Some(n)
-/// means retry n times.
-pub fn fetch_l2_snapshot(
-    exchange: &str,
-    market_type: MarketType,
-    symbol: &str,
-    retry: Option<u64>,
-) -> Result<String> {
-    retriable(exchange, market_type, symbol, fetch_l2_snapshot_internal, retry)
 }
 
 /// Fetch level3 orderbook snapshot.

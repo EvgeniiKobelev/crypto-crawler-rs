@@ -223,7 +223,7 @@ impl BinanceLinearRestClient {
     ///
     /// - <https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&limit=1000>
     /// - <https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT_210625&limit=1000>
-    pub fn fetch_agg_trades(
+    pub async fn fetch_agg_trades(
         symbol: &str,
         from_id: Option<u64>,
         start_time: Option<u64>,
@@ -242,8 +242,8 @@ impl BinanceLinearRestClient {
     /// For example:
     ///
     /// - <https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=1000>
-    /// - <https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT_211231&limit=1000>
-    pub fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
+    /// - <https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT_210625&limit=1000>
+    pub async fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
         check_symbol(symbol);
         let symbol = Some(symbol);
         let limit = Some(1000);
@@ -256,7 +256,7 @@ impl BinanceLinearRestClient {
     ///
     /// - <https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT>
     /// - <https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT_211231>
-    pub fn fetch_open_interest(symbol: &str) -> Result<String> {
+    pub async fn fetch_open_interest(symbol: &str) -> Result<String> {
         check_symbol(symbol);
         let symbol = Some(symbol);
         gen_api_binance!("/fapi/v1/openInterest", symbol)

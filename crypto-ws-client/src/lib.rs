@@ -65,7 +65,15 @@ mod common;
 pub use common::ws_client::WSClient;
 
 pub use clients::{
-    binance::*, binance_option::*, bitfinex::*, bitget::*, bithumb::*, bitmex::*, bitstamp::*,
-    bitz::*, bybit::*, coinbase_pro::*, deribit::*, dydx::*, ftx::*, gate::*, huobi::*, kraken::*,
-    kucoin::*, mexc::*, okx::*, zb::*, zbg::*,
+    binance::*, binance_option::*, bingx::*, bitfinex::*, bitget::*, bithumb::*, bitmex::*,
+    bitstamp::*, bitz::*, bybit::*, coinbase_pro::*, deribit::*, dydx::*, ftx::*, gate::*,
+    huobi::*, kraken::*, kucoin::*, mexc::*, okx::*, zb::*, zbg::*,
 };
+
+// Дополнительные экспорты для конкретных модулей
+pub mod mexc {
+    pub use super::clients::mexc::*;
+    pub mod protobuf {
+        pub use super::super::clients::mexc::protobuf::*;
+    }
+}

@@ -3,6 +3,7 @@ pub(super) mod common_traits;
 
 pub(super) mod binance;
 pub(super) mod binance_option;
+pub(super) mod bingx;
 pub(super) mod bitfinex;
 pub(super) mod bitget;
 pub(super) mod bithumb;

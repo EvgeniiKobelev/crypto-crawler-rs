@@ -7,19 +7,19 @@ pub use bingx_swap::BingxSwapRestClient;
 use crate::error::Result;
 use crypto_market_type::MarketType;
 
-pub(crate) fn fetch_l2_snapshot(market_type: MarketType, symbol: &str) -> Result<String> {
-    let func = match market_type {
-        MarketType::Spot => bingx_spot::BingxSpotRestClient::fetch_l2_snapshot,
-        MarketType::LinearSwap => bingx_swap::BingxSwapRestClient::fetch_l2_snapshot,
+pub(crate) async fn fetch_l2_snapshot(market_type: MarketType, symbol: &str) -> Result<String> {
+    match market_type {
+        MarketType::Spot => bingx_spot::BingxSpotRestClient::fetch_l2_snapshot(symbol).await,
+        MarketType::LinearSwap => bingx_swap::BingxSwapRestClient::fetch_l2_snapshot(symbol).await,
         _ => panic!("BingX unknown market_type: {market_type}"),
-    };
-
-    func(symbol)
+    }
 }
 
-pub(crate) fn fetch_open_interest(market_type: MarketType, symbol: &str) -> Result<String> {
+pub(crate) async fn fetch_open_interest(market_type: MarketType, symbol: &str) -> Result<String> {
     match market_type {
-        MarketType::LinearSwap => bingx_swap::BingxSwapRestClient::fetch_open_interest(symbol),
+        MarketType::LinearSwap => {
+            bingx_swap::BingxSwapRestClient::fetch_open_interest(symbol).await
+        }
         _ => panic!("BingX {market_type} does not have open interest data"),
     }
 }

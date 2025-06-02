@@ -3,14 +3,17 @@ use hmac::{Hmac, Mac};
 use reqwest::{blocking::Response, header};
 use sha2::Sha256;
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 type HmacSha256 = Hmac<Sha256>;
+
+const REQUEST_TIMEOUT: u64 = 10;
 
 // Вспомогательная функция для определения имени заголовка API-ключа
 fn get_api_key_header_name(url: &str) -> &'static str {
     if url.contains("bingx.com") {
         "X-BX-APIKEY"
+    } else if url.contains("mexc.com") || url.contains("api.mexc.com") {
+        "X-MEXC-APIKEY"
     } else {
         // По умолчанию используется заголовок для Binance или других бирж
         "X-MBX-APIKEY"
@@ -36,6 +39,30 @@ fn generate_signature(params: &BTreeMap<String, String>, secret: &str) -> Result
     mac.update(params_str.as_bytes());
     let result = mac.finalize();
     let signature = hex::encode(result.into_bytes());
+
+    Ok(signature)
+}
+
+// Специальная функция для создания подписи MEXC
+fn generate_mexc_signature(params: &BTreeMap<String, String>, secret: &str) -> Result<String> {
+    let mut params_str = String::new();
+
+    for (key, value) in params {
+        params_str.push_str(&format!("{}={}&", key, value));
+    }
+
+    // Удаляем последний &
+    if !params_str.is_empty() {
+        params_str.pop();
+    }
+
+    // MEXC подпись создается по формуле: HMAC-SHA256(secretKey, params_str) и возвращается в hex lowercase
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| Error("Failed to create HMAC".to_string()))?;
+    mac.update(params_str.as_bytes());
+    let result = mac.finalize();
+    // MEXC требует lowercase подпись
+    let signature = hex::encode(result.into_bytes()).to_lowercase();
 
     Ok(signature)
 }
@@ -77,22 +104,29 @@ pub(super) fn http_get(url: &str, params: &BTreeMap<String, String>) -> Result<S
     }
 }
 
-// Асинхронные методы
-pub(super) async fn http_get_raw_async(
+pub(super) async fn http_get_async(
     url: &str,
     params: &mut BTreeMap<String, String>,
     api_key: Option<&str>,
     api_secret: Option<&str>,
     proxy: Option<&str>,
-) -> Result<reqwest::Response> {
-    // Добавляем timestamp для Binance API
+) -> Result<String> {
+    // Обрабатываем аутентификацию если API ключи предоставлены
     if api_key.is_some() && api_secret.is_some() {
-        let timestamp =
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
-        params.insert("timestamp".to_string(), timestamp.clone());
+        // Проверяем, если timestamp уже не добавлен
+        if !params.contains_key("timestamp") {
+            let timestamp =
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+            params.insert("timestamp".to_string(), timestamp.clone());
+        }
 
-        // Генерируем подпись
-        let signature = generate_signature(params, api_secret.unwrap())?;
+        // Используем специальную подпись для MEXC
+        let signature = if url.contains("mexc.com") || url.contains("api.mexc.com") {
+            generate_mexc_signature(params, api_secret.unwrap())?
+        } else {
+            generate_signature(params, api_secret.unwrap())?
+        };
+
         params.insert("signature".to_string(), signature);
     }
 
@@ -120,6 +154,7 @@ pub(super) async fn http_get_raw_async(
 
     let mut client_builder = reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT))
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36")
         .gzip(true);
 
@@ -130,28 +165,16 @@ pub(super) async fn http_get_raw_async(
 
     let client = client_builder.build().map_err(|e| Error::from(e))?;
     let response = client.get(full_url.as_str()).send().await.map_err(|e| Error::from(e))?;
-    Ok(response)
-}
 
-pub(super) async fn http_get_async(
-    url: &str,
-    params: &mut BTreeMap<String, String>,
-    api_key: Option<&str>,
-    api_secret: Option<&str>,
-    proxy: Option<&str>,
-) -> Result<String> {
-    match http_get_raw_async(url, params, api_key, api_secret, proxy).await {
-        Ok(response) => match response.error_for_status() {
-            Ok(resp) => Ok(resp.text().await?),
-            Err(error) => {
-                // Создаем информативную ошибку
-                Err(crate::error::Error(format!(
-                    "API Error: {} - Проверьте параметры запроса.",
-                    error
-                )))
-            }
-        },
-        Err(err) => Err(err),
+    match response.error_for_status() {
+        Ok(resp) => Ok(resp.text().await?),
+        Err(error) => {
+            // Создаем информативную ошибку с URL для отладки
+            Err(crate::error::Error(format!(
+                "API Error: {} для URL ({}) - Проверьте API ключи и параметры запроса.",
+                error, full_url
+            )))
+        }
     }
 }
 
@@ -162,27 +185,35 @@ pub(super) async fn http_post_async(
     api_secret: Option<&str>,
     proxy: Option<&str>,
 ) -> Result<String> {
-    // Шаг 1: Добавляем timestamp, если используется авторизация
+    // Шаг 1: Добавляем timestamp, если используется авторизация и его еще нет
     if api_key.is_some() && api_secret.is_some() {
-        let timestamp =
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
-        params.insert("timestamp".to_string(), timestamp.clone());
+        // Проверяем, если timestamp уже не добавлен
+        if !params.contains_key("timestamp") {
+            let timestamp =
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+            params.insert("timestamp".to_string(), timestamp.clone());
+        }
 
         // Шаг 2: Генерируем подпись на основе всех параметров
-        let mut params_str = String::new();
-        for (key, value) in params.iter() {
-            params_str.push_str(&format!("{}={}&", key, value));
-        }
-        if !params_str.is_empty() {
-            params_str.pop(); // Удаляем последний &
-        }
+        // Используем специальную подпись для MEXC
+        let signature = if url.contains("mexc.com") || url.contains("api.mexc.com") {
+            generate_mexc_signature(params, api_secret.unwrap())?
+        } else {
+            let mut params_str = String::new();
+            for (key, value) in params.iter() {
+                params_str.push_str(&format!("{}={}&", key, value));
+            }
+            if !params_str.is_empty() {
+                params_str.pop(); // Удаляем последний &
+            }
 
-        // Создаем HMAC-SHA256 подпись
-        let mut mac = HmacSha256::new_from_slice(api_secret.unwrap().as_bytes())
-            .map_err(|_| Error("Failed to create HMAC".to_string()))?;
-        mac.update(params_str.as_bytes());
-        let result = mac.finalize();
-        let signature = hex::encode(result.into_bytes());
+            // Создаем HMAC-SHA256 подпись
+            let mut mac = HmacSha256::new_from_slice(api_secret.unwrap().as_bytes())
+                .map_err(|_| Error("Failed to create HMAC".to_string()))?;
+            mac.update(params_str.as_bytes());
+            let result = mac.finalize();
+            hex::encode(result.into_bytes())
+        };
 
         // Шаг 3: Добавляем подпись к параметрам
         params.insert("signature".to_string(), signature);

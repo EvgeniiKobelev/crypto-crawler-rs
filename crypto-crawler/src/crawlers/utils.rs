@@ -1,16 +1,16 @@
 use std::{
-    sync::{mpsc::Sender, Arc},
+    sync::{Arc, mpsc::Sender},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::utils::{REST_LOCKS, WS_LOCKS};
-use crypto_market_type::{get_market_types, MarketType};
+use crypto_market_type::{MarketType, get_market_types};
 use crypto_markets::fetch_symbols;
 use crypto_rest_client::{fetch_l2_snapshot, fetch_l3_snapshot, fetch_open_interest};
 use crypto_ws_client::*;
 use log::*;
 
-use crate::{get_hot_spot_symbols, utils::cmc_rank::sort_by_cmc_rank, Message, MessageType};
+use crate::{Message, MessageType, get_hot_spot_symbols, utils::cmc_rank::sort_by_cmc_rank};
 
 pub fn fetch_symbols_retry(exchange: &str, market_type: MarketType) -> Vec<String> {
     let retry_count = std::env::var("REST_RETRY_COUNT")
@@ -340,6 +340,7 @@ fn get_connection_interval_ms(exchange: &str, _market_type: MarketType) -> Optio
         "bitz" => Some(100), /* `cat crawler-trade-bitz-spot-error-12.log` has many "429 Too */
         // Many Requests"
         "kucoin" => Some(2000), /* Connection Limit: 30 per minute, see https://docs.kucoin.com/#connection-times */
+        "mexc" => Some(3000), /* Rate limiting - добавляем задержку между подключениями для избежания 429 ошибок */
         "okx" => Some(1000), /* Connection limit: 1 time per second, https://www.okx.com/docs-v5/en/#websocket-api-connect */
         _ => None,
     }

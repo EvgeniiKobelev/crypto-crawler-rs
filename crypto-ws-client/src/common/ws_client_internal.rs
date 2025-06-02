@@ -10,6 +10,7 @@ use std::{
 
 use flate2::read::{DeflateDecoder, GzDecoder};
 use log::*;
+use rand;
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
@@ -53,39 +54,118 @@ impl<H: MessageHandler> WSClientInternal<H> {
             std::sync::mpsc::Sender<String>,
         )>();
 
-        match super::connect_async::connect_async(url, uplink_limit).await {
-            Ok((message_rx, command_tx)) => {
-                let _ = params_tx.send((handler, message_rx, tx));
+        // Максимальное количество попыток подключения
+        const MAX_CONNECTION_ATTEMPTS: u32 = 5;
+        let mut backoff_time = 2; // Начальная задержка в секундах
 
-                WSClientInternal {
-                    exchange,
-                    url: url.to_string(),
-                    params_rx: std::sync::Mutex::new(params_rx),
-                    command_tx,
-                    reconnect_in_progress: Arc::new(AtomicBool::new(false)),
-                    active_subscriptions: std::sync::Mutex::new(Vec::new()),
-                    ping_task_handle: std::sync::Mutex::new(None),
+        // Для MEXC используем более длительные интервалы из-за строгих лимитов
+        let is_mexc = exchange == "mexc";
+        if is_mexc {
+            backoff_time = 5;
+        }
+
+        for attempt in 1..=MAX_CONNECTION_ATTEMPTS {
+            match super::connect_async::connect_async(url, uplink_limit).await {
+                Ok((message_rx, command_tx)) => {
+                    let _ = params_tx.send((handler, message_rx, tx));
+
+                    return WSClientInternal {
+                        exchange,
+                        url: url.to_string(),
+                        params_rx: std::sync::Mutex::new(params_rx),
+                        command_tx,
+                        reconnect_in_progress: Arc::new(AtomicBool::new(false)),
+                        active_subscriptions: std::sync::Mutex::new(Vec::new()),
+                        ping_task_handle: std::sync::Mutex::new(None),
+                    };
                 }
-            }
-            Err(err) => match err {
-                Error::Http(resp) => {
-                    if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-                        if let Some(retry_after) = resp.headers().get("retry-after") {
-                            let mut seconds = retry_after.to_str().unwrap().parse::<u64>().unwrap();
-                            seconds += rand::random::<u64>() % 9 + 1; // add random seconds to avoid concurrent requests
-                            error!(
-                                "The retry-after header value is {}, sleeping for {} seconds now",
-                                retry_after.to_str().unwrap(),
-                                seconds
-                            );
-                            tokio::time::sleep(Duration::from_secs(seconds)).await;
+                Err(err) => match err {
+                    Error::Http(resp) => {
+                        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+                            let retry_seconds =
+                                if let Some(retry_after) = resp.headers().get("retry-after") {
+                                    let mut seconds = retry_after
+                                        .to_str()
+                                        .unwrap_or("60")
+                                        .parse::<u64>()
+                                        .unwrap_or(60);
+                                    seconds += rand::random::<u64>() % 9 + 1; // add random seconds to avoid concurrent requests
+                                    seconds
+                                } else {
+                                    // Если нет retry-after заголовка, используем экспоненциальный backoff
+                                    backoff_time + (rand::random::<u64>() % 10)
+                                };
+
+                            if attempt < MAX_CONNECTION_ATTEMPTS {
+                                warn!(
+                                    "Failed to connect to {} due to 429 too many requests (attempt {}/{}), waiting {} seconds before retry",
+                                    url, attempt, MAX_CONNECTION_ATTEMPTS, retry_seconds
+                                );
+                                tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
+
+                                // Увеличиваем время ожидания для следующей попытки
+                                let max_backoff = if is_mexc { 300 } else { 120 }; // Для MEXC используем более длительный максимум
+                                backoff_time = std::cmp::min(backoff_time * 2, max_backoff);
+                                continue;
+                            } else {
+                                error!(
+                                    "Failed to connect to {} due to 429 too many requests after {} attempts, giving up",
+                                    url, MAX_CONNECTION_ATTEMPTS
+                                );
+                                panic!(
+                                    "Failed to connect to {url} due to 429 too many requests after {MAX_CONNECTION_ATTEMPTS} attempts"
+                                )
+                            }
+                        } else {
+                            panic!(
+                                "Failed to connect to {url} due to HTTP error: {}",
+                                resp.status()
+                            )
                         }
                     }
-                    panic!("Failed to connect to {url} due to 429 too many requests")
-                }
-                _ => panic!("Failed to connect to {url}, error: {err}"),
-            },
+                    _ => {
+                        // Специальная диагностика для MEXC User Data Stream
+                        if is_mexc && url.contains("wbs-api.mexc.com") && url.contains("listenKey=")
+                        {
+                            error!("MEXC User Data Stream подключение отклонено сервером");
+                            error!("Возможные причины:");
+                            error!("1. Неправильный или истёкший listen_key");
+                            error!("2. Listen key был получен для другого API аккаунта");
+                            error!("3. Listen key уже использован в другом подключении");
+                            error!("4. API ключ не имеет прав на создание User Data Stream");
+                            error!("Создайте новый listen_key через REST API:");
+                            error!(
+                                "curl -X POST \"https://api.mexc.com/api/v3/userDataStream\" -H \"X-MEXC-APIKEY: your_api_key\""
+                            );
+                        }
+
+                        if attempt < MAX_CONNECTION_ATTEMPTS {
+                            warn!(
+                                "Failed to connect to {} (attempt {}/{}): {}, retrying...",
+                                url, attempt, MAX_CONNECTION_ATTEMPTS, err
+                            );
+                            tokio::time::sleep(Duration::from_secs(backoff_time)).await;
+                            backoff_time = std::cmp::min(backoff_time * 2, 60);
+                            continue;
+                        } else {
+                            if is_mexc && url.contains("wbs-api.mexc.com") {
+                                error!(
+                                    "Не удалось подключиться к MEXC User Data Stream после {} попыток",
+                                    MAX_CONNECTION_ATTEMPTS
+                                );
+                                error!("Убедитесь, что listen_key правильный и актуальный");
+                                panic!("MEXC User Data Stream connection failed: {err}")
+                            } else {
+                                panic!("Failed to connect to {url}, error: {err}")
+                            }
+                        }
+                    }
+                },
+            }
         }
+
+        // Этот код никогда не должен быть достигнут, но добавляем для полноты
+        panic!("Failed to connect to {url} after {MAX_CONNECTION_ATTEMPTS} attempts")
     }
 
     pub async fn send(&self, commands: &[String]) {
@@ -391,7 +471,17 @@ impl<H: MessageHandler> WSClientInternal<H> {
     pub async fn run(&self) {
         let (mut handler, mut message_rx, tx) = {
             let mut guard = self.params_rx.lock().unwrap();
-            guard.try_recv().unwrap()
+            match guard.try_recv() {
+                Ok(params) => params,
+                Err(err) => {
+                    error!(
+                        "Не удалось получить параметры WebSocket соединения для {}: {:?}",
+                        self.exchange, err
+                    );
+                    error!("Возможно, соединение было закрыто до инициализации");
+                    return;
+                }
+            }
         };
 
         let num_unanswered_ping = Arc::new(AtomicIsize::new(0)); // for debug only
@@ -426,6 +516,161 @@ impl<H: MessageHandler> WSClientInternal<H> {
                             crate::clients::okx::EXCHANGE_NAME => {
                                 let mut decoder = DeflateDecoder::new(&binary[..]);
                                 decoder.read_to_string(&mut txt)
+                            }
+                            crate::clients::mexc::EXCHANGE_NAME => {
+                                // MEXC может использовать разные форматы, попробуем несколько вариантов
+                                if binary.len() > 0 {
+                                    // Попробуем определить формат данных по первым байтам
+                                    debug!(
+                                        "MEXC binary data - первые 10 байт: {:?}",
+                                        &binary[..std::cmp::min(10, binary.len())]
+                                    );
+
+                                    // Проверяем типичные заголовки сжатия СНАЧАЛА
+                                    let is_gzip =
+                                        binary.len() >= 2 && binary[0] == 0x1f && binary[1] == 0x8b;
+                                    let is_deflate_zlib = binary.len() >= 2
+                                        && binary[0] == 0x78
+                                        && (binary[1] == 0x01 || binary[1] == 0x9c || binary[1] == 0xda);
+
+                                    // Улучшенное определение Protocol Buffers
+                                    // Protobuf часто начинается с varint field number + wire type
+                                    // Первые байты [10, 30] = field 1, wire type 2 (length-delimited), length 30
+                                    let is_likely_protobuf = binary.len() >= 4 && 
+                                        !is_gzip && !is_deflate_zlib &&
+                                        (
+                                            // Типичные protobuf паттерны
+                                            (binary[0] == 0x08 && binary[1] < 0x80) || // field 1, varint
+                                            (binary[0] == 0x0a && binary[1] < 0x80) || // field 1, length-delimited
+                                            (binary[0] == 0x10 && binary[1] < 0x80) || // field 2, varint
+                                            (binary[0] == 0x12 && binary[1] < 0x80) || // field 2, length-delimited
+                                            // Специально для данного случая: [10, 30, "spot@private..."]
+                                            (binary[0] == 0x0a && binary.len() > 10 && 
+                                             binary[2..].starts_with(b"spot@"))
+                                        );
+
+                                    debug!(
+                                        "MEXC binary analysis: is_gzip={}, is_deflate_zlib={}, is_likely_protobuf={}",
+                                        is_gzip, is_deflate_zlib, is_likely_protobuf
+                                    );
+
+                                    if is_likely_protobuf {
+                                        // Определенно Protocol Buffers данные
+                                        info!("🔍 MEXC: Обнаружены Protocol Buffers данные (длина: {})", binary.len());
+                                        
+                                        // Попробуем декодировать protobuf данные
+                                        match crate::clients::mexc::decode_mexc_protobuf(&binary) {
+                                            Ok(json_string) => {
+                                                info!("✅ Успешно декодированы protobuf данные в JSON");
+                                                debug!("Декодированный JSON: {}", json_string);
+                                                txt = json_string;
+                                                Ok(txt.len())
+                                            }
+                                            Err(decode_err) => {
+                                                // Если декодирование не удалось, показываем диагностику
+                                                warn!("❌ Не удалось декодировать protobuf данные: {}", decode_err);
+                                                
+                                                // Попробуем извлечь информацию о канале из protobuf для диагностики
+                                                if binary.len() > 10 && binary[0] == 0x0a {
+                                                    let channel_length = binary[1] as usize;
+                                                    if binary.len() > 2 + channel_length {
+                                                        if let Ok(channel_name) = String::from_utf8(binary[2..2+channel_length].to_vec()) {
+                                                            warn!("📡 Канал протобуф: '{}'", channel_name);
+                                                            if channel_name.contains(".pb") {
+                                                                warn!("💡 Совет: возможно используется другая protobuf схема");
+                                                                warn!("   Рекомендация: используйте JSON канал '{}'", channel_name.replace(".pb", ""));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                warn!("📖 См. README_mexc_websocket_troubleshooting.md для подробностей");
+
+                                                Err(std::io::Error::new(
+                                                    std::io::ErrorKind::InvalidData,
+                                                    format!("Protocol Buffers decoding failed: {}", decode_err),
+                                                ))
+                                            }
+                                        }
+                                    } else if is_gzip {
+                                        // Данные сжаты gzip
+                                        debug!("Trying GZIP decompression for MEXC");
+                                        let mut gzip_decoder = GzDecoder::new(&binary[..]);
+                                        gzip_decoder.read_to_string(&mut txt)
+                                    } else if is_deflate_zlib {
+                                        // Данные сжаты deflate/zlib
+                                        debug!("Trying DEFLATE decompression for MEXC");
+                                        let mut deflate_decoder = DeflateDecoder::new(&binary[..]);
+                                        deflate_decoder.read_to_string(&mut txt)
+                                    } else {
+                                        // Возможно это несжатые JSON данные
+                                        debug!("Trying raw UTF-8 parsing for MEXC");
+                                        match String::from_utf8(binary.clone()) {
+                                            Ok(utf8_string) => {
+                                                if utf8_string.trim().starts_with('{')
+                                                    || utf8_string.trim().starts_with('[')
+                                                {
+                                                    // Это JSON данные
+                                                    txt = utf8_string;
+                                                    Ok(txt.len())
+                                                } else {
+                                                    // Не JSON и не protobuf - неизвестный формат
+                                                    warn!("MEXC: Неизвестный формат данных (длина: {})", binary.len());
+                                                    warn!("Первые 20 байт: {:?}", &binary[..std::cmp::min(20, binary.len())]);
+                                                    
+                                                    Err(std::io::Error::new(
+                                                        std::io::ErrorKind::InvalidData,
+                                                        "Unknown data format - not JSON, not protobuf, not compressed",
+                                                    ))
+                                                }
+                                            }
+                                            Err(utf8_error) => {
+                                                // Не UTF-8, последняя попытка - raw deflate
+                                                debug!("Trying raw DEFLATE decompression for MEXC");
+                                                txt.clear();
+
+                                                use flate2::read::DeflateDecoder;
+                                                use std::io::Cursor;
+
+                                                let cursor = Cursor::new(&binary);
+                                                let mut raw_deflate_decoder = DeflateDecoder::new(cursor);
+                                                match raw_deflate_decoder.read_to_string(&mut txt) {
+                                                    Ok(_) => {
+                                                        if !txt.is_empty()
+                                                            && (txt.trim().starts_with('{')
+                                                                || txt.trim().starts_with('['))
+                                                        {
+                                                            debug!("Successfully decompressed with raw DEFLATE");
+                                                            Ok(txt.len())
+                                                        } else {
+                                                            Err(std::io::Error::new(
+                                                                std::io::ErrorKind::InvalidData,
+                                                                "Raw DEFLATE produced non-JSON content",
+                                                            ))
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        // Все методы не сработали - возможно это протобуф, который мы не распознали
+                                                        warn!("MEXC: Все методы декомпрессии не сработали");
+                                                        warn!("Возможно это протобуф данные или неподдерживаемый формат");
+                                                        warn!("Данные: длина={}, UTF-8 ошибка: {}", binary.len(), utf8_error);
+                                                        
+                                                        Err(std::io::Error::new(
+                                                            std::io::ErrorKind::InvalidData,
+                                                            format!("All decompression methods failed: {}", utf8_error),
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    error!("MEXC received empty binary data");
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "Empty binary data from MEXC",
+                                    ))
+                                }
                             }
                             _ => {
                                 panic!("Unknown binary format from {}", self.url);

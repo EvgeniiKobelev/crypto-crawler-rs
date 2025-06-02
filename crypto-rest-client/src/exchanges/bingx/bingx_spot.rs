@@ -145,17 +145,63 @@ impl BingxSpotRestClient {
         Ok(response)
     }
 
+    /// Отменить существующий ордер.
+    ///
+    /// Использует BingX Spot API v1 эндпоинт `/openApi/spot/v1/trade/cancel` для отмены ордера.
+    /// Требует API ключ и секретный ключ для аутентификации.
+    ///
+    /// # Параметры
+    /// * `symbol` - Торговая пара в формате "BTC-USDT" (с дефисом)
+    /// * `order_id` - Идентификатор ордера для отмены
+    ///
+    /// # Возвращает
+    /// * `Result<String>` - JSON ответ с информацией об отмененном ордере
+    ///
+    /// # Ошибки
+    /// * `Error` - Если отсутствуют API ключи
+    /// * `Error` - Если ордер не найден или уже отменен
+    /// * `Error` - Если ордер нельзя отменить (например, уже исполнен)
+    ///
+    /// # Пример
+    /// ```
+    /// let client = BingxSpotRestClient::new(Some(api_key), Some(secret_key), None);
+    /// let result = client.cancel_order("BTC-USDT", "12345678").await?;
+    /// ```
+    pub async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<String> {
+        if self.api_key.is_none() || self.api_secret.is_none() {
+            return Err(crate::error::Error("API key and secret are required".to_string()));
+        }
+
+        let endpoint = format!("{}/openApi/spot/v1/trade/cancel", BASE_URL);
+        let mut params = BTreeMap::new();
+
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("orderId".to_string(), order_id.to_string());
+        params.insert("timestamp".to_string(), Self::get_timestamp().to_string());
+
+        let response = http_post_async(
+            &endpoint,
+            &mut params,
+            self.api_key.as_deref(),
+            self.api_secret.as_deref(),
+            self.proxy.as_deref(),
+        )
+        .await?;
+
+        Ok(response)
+    }
+
     /// Get a Level2 snapshot of orderbook.
     ///
     /// For example: <https://open-api.bingx.com/openApi/spot/v1/market/depth?symbol=BTC-USDT&limit=100>
-    pub fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
+    pub async fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
         let symbol = symbol.replace('/', "-");
         let url = format!("{}/openApi/spot/v1/market/depth", BASE_URL);
         let mut params = BTreeMap::new();
         params.insert("symbol".to_string(), symbol);
         params.insert("limit".to_string(), "100".to_string());
 
-        http_get(&url, &params)
+        http_get_async(&url, &mut params, None, None, None).await
     }
 
     /// Get all available trading pairs

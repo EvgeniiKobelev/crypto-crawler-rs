@@ -130,20 +130,20 @@ impl BingxSwapRestClient {
     /// Get a Level2 snapshot of orderbook.
     ///
     /// For example: <https://open-api.bingx.com/openApi/swap/v2/quote/depth?symbol=BTC-USDT&limit=100>
-    pub fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
+    pub async fn fetch_l2_snapshot(symbol: &str) -> Result<String> {
         let symbol = symbol.replace('/', "-");
         let url = format!("{}/openApi/swap/v2/quote/depth", BASE_URL);
         let mut params = BTreeMap::new();
         params.insert("symbol".to_string(), symbol);
         params.insert("limit".to_string(), "100".to_string());
 
-        http_get(&url, &params)
+        http_get_async(&url, &mut params, None, None, None).await
     }
 
     /// Get open interest data for a specific symbol
     ///
     /// For example: <https://open-api.bingx.com/openApi/swap/v2/quote/openInterest?symbol=BTC-USDT>
-    pub fn fetch_open_interest(symbol: &str) -> Result<String> {
+    pub async fn fetch_open_interest(symbol: &str) -> Result<String> {
         let symbol = symbol.replace('/', "-");
         let url = format!("{}/openApi/swap/v2/quote/openInterest", BASE_URL);
         let mut params = BTreeMap::new();

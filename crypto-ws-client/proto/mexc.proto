@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package mexc;
+
+// Основное сообщение WebSocket от MEXC
+message WSMessage {
+  string channel = 1;    // Канал (например, "spot@private.account.v3.api")
+  bytes data = 2;        // Сериализованные данные (может быть любым из типов ниже)
+  int64 ts = 3;          // Timestamp
+}
+
+// Данные торговых сделок (deals)
+message Deal {
+  string symbol = 1;     // Торговая пара (например, "BTCUSDT")
+  string price = 2;      // Цена сделки
+  string quantity = 3;   // Объём сделки
+  int64 time = 4;        // Время сделки
+  int32 takerOrderSide = 5; // Сторона тейкера (1 = buy, 2 = sell)
+}
+
+// Данные глубины рынка (depth)
+message DepthData {
+  string symbol = 1;     // Торговая пара
+  repeated PriceLevel asks = 2;  // Ордера на продажу
+  repeated PriceLevel bids = 3;  // Ордера на покупку
+  int64 version = 4;     // Версия orderbook
+}
+
+// Уровень цены в orderbook
+message PriceLevel {
+  string price = 1;      // Цена
+  string quantity = 2;   // Объём
+}
+
+// Данные свечей (kline)
+message KlineData {
+  string symbol = 1;     // Торговая пара
+  string interval = 2;   // Интервал (например, "1m", "5m")
+  int64 openTime = 3;    // Время открытия
+  int64 closeTime = 4;   // Время закрытия
+  string open = 5;       // Цена открытия
+  string high = 6;       // Максимальная цена
+  string low = 7;        // Минимальная цена
+  string close = 8;      // Цена закрытия
+  string volume = 9;     // Объём торгов
+}
+
+// Приватные данные аккаунта
+message AccountData {
+  string accountId = 1;  // ID аккаунта
+  repeated Balance balances = 2;  // Балансы
+  int64 updateTime = 3;  // Время обновления
+}
+
+// Баланс актива
+message Balance {
+  string asset = 1;      // Актив (например, "BTC", "USDT")
+  string free = 2;       // Свободный баланс
+  string locked = 3;     // Заблокированный баланс
+}
+
+// Обновления ордеров
+message OrderUpdate {
+  string symbol = 1;     // Торговая пара
+  string orderId = 2;    // ID ордера
+  string clientOrderId = 3; // Клиентский ID ордера
+  string side = 4;       // Сторона (BUY/SELL)
+  string type = 5;       // Тип ордера
+  string status = 6;     // Статус ордера
+  string price = 7;      // Цена
+  string origQty = 8;    // Изначальное количество
+  string executedQty = 9; // Исполненное количество
+  int64 updateTime = 10; // Время обновления
+} 

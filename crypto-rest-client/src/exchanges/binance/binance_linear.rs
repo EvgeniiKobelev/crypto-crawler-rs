@@ -128,7 +128,7 @@ impl BinanceLinearRestClient {
         let formatted_price = format!("{:.*}", price_precision, rounded_price);
 
         params.insert("quantity".to_string(), formatted_quantity);
-        params.insert("price".to_string(), formatted_price);
+        params.insert("price".to_string(), price.to_string());
 
         // Увеличиваем recvWindow для предотвращения ошибок подписи
         params.insert("recvWindow".to_string(), "10000".to_string());

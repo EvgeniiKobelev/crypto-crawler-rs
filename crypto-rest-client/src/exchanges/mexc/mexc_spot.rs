@@ -172,10 +172,6 @@ impl MexcSpotRestClient {
         let query_string = query_params.join("&");
         let full_url = format!("{}?{}", url, query_string);
 
-        // Отладочная информация
-        println!("DEBUG: Full URL: {}", full_url);
-        println!("DEBUG: All params: {:?}", params);
-
         // Создаем HTTP клиент
         let mut client_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))

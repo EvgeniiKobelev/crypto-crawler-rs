@@ -3,30 +3,30 @@
 pub struct ExchangeConfig {
     pub api_key: Option<String>,
     pub secret_key: Option<String>,
-    pub passphrase: Option<String>,
+    pub password: Option<String>,
     pub proxy: Option<String>,
     pub testnet: bool,
 }
 
 impl Default for ExchangeConfig {
     fn default() -> Self {
-        Self { api_key: None, secret_key: None, passphrase: None, proxy: None, testnet: false }
+        Self { api_key: None, secret_key: None, password: None, proxy: None, testnet: false }
     }
 }
 
 impl ExchangeConfig {
     /// Создать новую конфигурацию с API ключами
     pub fn new(api_key: Option<String>, secret_key: Option<String>) -> Self {
-        Self { api_key, secret_key, passphrase: None, proxy: None, testnet: false }
+        Self { api_key, secret_key, password: None, proxy: None, testnet: false }
     }
 
-    /// Создать конфигурацию с API ключами и passphrase (для OKX, KuCoin)
-    pub fn with_passphrase(
+    /// Создать конфигурацию с API ключами и password (для OKX, KuCoin)
+    pub fn with_password(
         api_key: Option<String>,
         secret_key: Option<String>,
-        passphrase: Option<String>,
+        password: Option<String>,
     ) -> Self {
-        Self { api_key, secret_key, passphrase, proxy: None, testnet: false }
+        Self { api_key, secret_key, password, proxy: None, testnet: false }
     }
 
     /// Установить прокси

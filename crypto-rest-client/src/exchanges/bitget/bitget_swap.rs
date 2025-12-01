@@ -102,24 +102,68 @@ impl BitgetSwapRestClient {
         Ok(contracts)
     }
 
-    /// Create a new order.
+    /// Create a new order using Bitget V2 API.
     ///
-    /// * `symbol` - The trading pair, e.g., "BTCUSDT_UMCBL"
+    /// * `symbol` - The trading pair, e.g., "BTCUSDT"
     /// * `margin_coin` - The margin coin, e.g., "USDT"
-    /// * `side` - For USD-M Futures: "open_long", "open_short", "close_long", "close_short"
-    /// * `order_type` - "limit", "market", "post_only", etc.
+    /// * `side` - Order direction: "buy" or "sell"
+    /// * `order_type` - "limit" or "market"
     /// * `size` - The amount of contracts to trade
     /// * `price` - The price for a limit order (None for market orders)
     /// * `client_order_id` - Optional client order ID
     ///
     /// Returns the order ID if successful.
     ///
-    /// API documentation: <https://bitgetlimited.github.io/apidoc/en/mix/#place-order>
+    /// API documentation: <https://www.bitgetapp.com/api-doc/contract/trade/Place-Order>
     pub async fn create_order(
         &self,
         symbol: &str,
         margin_coin: &str,
         side: &str,
+        order_type: &str,
+        size: f64,
+        price: Option<f64>,
+        client_order_id: Option<&str>,
+    ) -> Result<String> {
+        self.create_order_v2(
+            symbol,
+            "USDT-FUTURES",
+            margin_coin,
+            "crossed",
+            side,
+            None,
+            order_type,
+            size,
+            price,
+            client_order_id,
+        )
+        .await
+    }
+
+    /// Create a new order using Bitget V2 API with full parameters.
+    ///
+    /// * `symbol` - The trading pair, e.g., "BTCUSDT"
+    /// * `product_type` - Product type: "USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES"
+    /// * `margin_coin` - The margin coin, e.g., "USDT"
+    /// * `margin_mode` - Position mode: "isolated" or "crossed"
+    /// * `side` - Order direction: "buy" or "sell"
+    /// * `trade_side` - Trade side for hedge mode: Some("open") or Some("close"), None for one-way mode
+    /// * `order_type` - "limit" or "market"
+    /// * `size` - The amount of contracts to trade
+    /// * `price` - The price for a limit order (None for market orders)
+    /// * `client_order_id` - Optional client order ID
+    ///
+    /// Returns the order ID if successful.
+    ///
+    /// API documentation: <https://www.bitgetapp.com/api-doc/contract/trade/Place-Order>
+    pub async fn create_order_v2(
+        &self,
+        symbol: &str,
+        product_type: &str,
+        margin_coin: &str,
+        margin_mode: &str,
+        side: &str,
+        trade_side: Option<&str>,
         order_type: &str,
         size: f64,
         price: Option<f64>,
@@ -139,12 +183,21 @@ impl BitgetSwapRestClient {
 
         let mut order_data = json!({
             "symbol": symbol,
+            "productType": product_type,
             "marginCoin": margin_coin,
+            "marginMode": margin_mode,
             "side": side,
             "orderType": order_type,
             "size": size.to_string(),
-            "timeInForceValue": "normal",
         });
+
+        if order_type == "limit" {
+            order_data["force"] = json!("gtc");
+        }
+
+        if let Some(ts) = trade_side {
+            order_data["tradeSide"] = json!(ts);
+        }
 
         if let Some(p) = price {
             order_data["price"] = json!(p.to_string());
@@ -156,7 +209,7 @@ impl BitgetSwapRestClient {
 
         let body = order_data.to_string();
         let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-        let request_path = "/api/mix/v1/order/placeOrder";
+        let request_path = "/api/v2/mix/order/place-order";
 
         // Строка для подписи: timestamp + method.toUpperCase() + requestPath + body
         let sign_payload = format!("{}POST{}{}", timestamp, request_path, body);
@@ -205,29 +258,46 @@ impl BitgetSwapRestClient {
         let response_body: serde_json::Value = response.json().await?;
 
         if response_body["code"].as_str().unwrap_or("") != "00000" {
-            return Err(Error(format!(
-                "Bitget API error: {}",
-                response_body["msg"].as_str().unwrap_or("Unknown error")
-            )));
+            return Err(Error(format!("Bitget API error: {}", response_body)));
         }
 
         Ok(response_body["data"]["orderId"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Cancel an order.
+    /// Cancel an order using Bitget V2 API.
     ///
-    /// * `symbol` - The trading pair, e.g., "BTCUSDT_UMCBL"
+    /// * `symbol` - The trading pair, e.g., "BTCUSDT"
     /// * `order_id` - The order ID to cancel
     /// * `margin_coin` - The margin coin, e.g., "USDT"
     ///
     /// Returns success or error.
     ///
-    /// API documentation: <https://bitgetlimited.github.io/apidoc/en/mix/#cancel-order>
+    /// API documentation: <https://www.bitgetapp.com/api-doc/contract/trade/Cancel-Order>
     pub async fn cancel_order(
         &self,
         symbol: &str,
         order_id: &str,
         margin_coin: &str,
+    ) -> Result<bool> {
+        self.cancel_order_v2(symbol, "USDT-FUTURES", order_id, Some(margin_coin)).await
+    }
+
+    /// Cancel an order using Bitget V2 API with full parameters.
+    ///
+    /// * `symbol` - The trading pair, e.g., "BTCUSDT"
+    /// * `product_type` - Product type: "USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES"
+    /// * `order_id` - The order ID to cancel
+    /// * `margin_coin` - Optional margin coin, e.g., "USDT"
+    ///
+    /// Returns success or error.
+    ///
+    /// API documentation: <https://www.bitgetapp.com/api-doc/contract/trade/Cancel-Order>
+    pub async fn cancel_order_v2(
+        &self,
+        symbol: &str,
+        product_type: &str,
+        order_id: &str,
+        margin_coin: Option<&str>,
     ) -> Result<bool> {
         if self._api_key.is_none() || self._api_secret.is_none() {
             return Err(Error("API key and secret are required for canceling orders".to_string()));
@@ -241,15 +311,19 @@ impl BitgetSwapRestClient {
         let api_secret = self._api_secret.clone().unwrap();
         let api_passphrase = self._api_passphrase.clone().unwrap();
 
-        let cancel_data = json!({
+        let mut cancel_data = json!({
             "symbol": symbol,
+            "productType": product_type,
             "orderId": order_id,
-            "marginCoin": margin_coin,
         });
+
+        if let Some(mc) = margin_coin {
+            cancel_data["marginCoin"] = json!(mc);
+        }
 
         let body = cancel_data.to_string();
         let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-        let request_path = "/api/mix/v1/order/cancel-order";
+        let request_path = "/api/v2/mix/order/cancel-order";
 
         // Строка для подписи: timestamp + method.toUpperCase() + requestPath + body
         let sign_payload = format!("{}POST{}{}", timestamp, request_path, body);
@@ -298,10 +372,7 @@ impl BitgetSwapRestClient {
         let response_body: serde_json::Value = response.json().await?;
 
         if response_body["code"].as_str().unwrap_or("") != "00000" {
-            return Err(Error(format!(
-                "Bitget API error: {}",
-                response_body["msg"].as_str().unwrap_or("Unknown error")
-            )));
+            return Err(Error(format!("Bitget API error: {}", response_body)));
         }
 
         Ok(true)

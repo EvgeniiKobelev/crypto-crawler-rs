@@ -3,9 +3,9 @@ use std::{
     num::NonZeroU32,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicIsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -15,6 +15,69 @@ use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use crate::common::message_handler::{MessageHandler, MiscMessage};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Failed(String),
+}
+
+#[derive(Debug, Default)]
+pub struct ConnectionMetrics {
+    pub total_connections: AtomicU64,
+    pub successful_connections: AtomicU64,
+    pub failed_connections: AtomicU64,
+    pub reconnection_attempts: AtomicU64,
+    pub ping_failures: AtomicU64,
+    pub last_error: Mutex<Option<String>>,
+}
+
+impl ConnectionMetrics {
+    pub fn record_connection_attempt(&self) {
+        self.total_connections.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_connection_success(&self) {
+        self.successful_connections.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_connection_failure(&self, error: &str) {
+        self.failed_connections.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.lock().unwrap() = Some(error.to_string());
+    }
+    
+    pub fn record_reconnection_attempt(&self) {
+        self.reconnection_attempts.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_ping_failure(&self) {
+        self.ping_failures.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub struct HealthStatus {
+    pub state: ConnectionState,
+    pub total_connections: u64,
+    pub successful_connections: u64,
+    pub failed_connections: u64,
+    pub reconnection_attempts: u64,
+    pub ping_failures: u64,
+    pub last_ping: i64,
+    pub uptime: Duration,
+    pub last_error: Option<String>,
+}
+
+fn log_connection_event(exchange: &str, event: &str, details: &str) {
+    info!(
+        target: "websocket_connection",
+        "WebSocket connection event - exchange: {}, event: {}, details: {}, timestamp: {}",
+        exchange, event, details, chrono::Utc::now().to_rfc3339()
+    );
+}
 
 // `WSClientInternal` should be Sync + Send so that it can be put into Arc
 // directly.
@@ -37,9 +100,71 @@ pub(crate) struct WSClientInternal<H: MessageHandler> {
     active_subscriptions: std::sync::Mutex<Vec<String>>,
     // Добавляем handle для пинг-задачи, чтобы можно было отменить её при переподключении
     ping_task_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    // Новые поля для улучшенного управления состоянием
+    connection_state: Mutex<ConnectionState>,
+    metrics: ConnectionMetrics,
+    start_time: Instant,
+    last_ping_time: AtomicU64,
+    ping_shutdown_tx: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
 }
 
 impl<H: MessageHandler> WSClientInternal<H> {
+    fn set_connection_state(&self, state: ConnectionState) {
+        let mut guard = self.connection_state.lock().unwrap();
+        if *guard != state {
+            log_connection_event(self.exchange, "state_change", &format!("{:?} -> {:?}", *guard, state));
+            *guard = state;
+        }
+    }
+    
+    pub fn get_health_status(&self) -> HealthStatus {
+        let state = self.connection_state.lock().unwrap().clone();
+        let last_error = self.metrics.last_error.lock().unwrap().clone();
+        
+        HealthStatus {
+            state,
+            total_connections: self.metrics.total_connections.load(Ordering::Relaxed),
+            successful_connections: self.metrics.successful_connections.load(Ordering::Relaxed),
+            failed_connections: self.metrics.failed_connections.load(Ordering::Relaxed),
+            reconnection_attempts: self.metrics.reconnection_attempts.load(Ordering::Relaxed),
+            ping_failures: self.metrics.ping_failures.load(Ordering::Relaxed),
+            last_ping: self.last_ping_time.load(Ordering::Relaxed) as i64,
+            uptime: self.start_time.elapsed(),
+            last_error,
+        }
+    }
+    
+    fn stop_ping_task_safely(&self) {
+        let mut guard = self.ping_task_handle.lock().unwrap();
+        if let Some(handle) = guard.take() {
+            // Сначала пытаемся graceful shutdown
+            if let Some(shutdown_tx) = self.ping_shutdown_tx.lock().unwrap().take() {
+                match shutdown_tx.send(true) {
+                    Ok(_) => {
+                        debug!("Sent graceful shutdown signal to ping task for {}", self.exchange);
+                        // Даем время на graceful shutdown
+                        let handle_clone = handle;
+                        tokio::spawn(async move {
+                            match tokio::time::timeout(Duration::from_secs(2), handle_clone).await {
+                                Ok(_) => debug!("Ping task shutdown gracefully"),
+                                Err(_) => {
+                                    warn!("Ping task didn't shutdown gracefully within timeout");
+                                }
+                            }
+                        });
+                    }
+                    Err(_) => {
+                        debug!("Ping task channel already closed for {}, aborting task", self.exchange);
+                        handle.abort();
+                    }
+                }
+            } else {
+                // Нет канала - просто abort
+                debug!("No shutdown channel available for {}, aborting ping task", self.exchange);
+                handle.abort();
+            }
+        }
+    }
     pub async fn connect(
         exchange: &'static str,
         url: &str,
@@ -65,9 +190,13 @@ impl<H: MessageHandler> WSClientInternal<H> {
         }
 
         for attempt in 1..=MAX_CONNECTION_ATTEMPTS {
+            log_connection_event(exchange, "connection_attempt", &format!("Attempt {}/{}", attempt, MAX_CONNECTION_ATTEMPTS));
+            
             match super::connect_async::connect_async(url, uplink_limit).await {
                 Ok((message_rx, command_tx)) => {
                     let _ = params_tx.send((handler, message_rx, tx));
+                    
+                    log_connection_event(exchange, "connection_success", "WebSocket connected successfully");
 
                     return WSClientInternal {
                         exchange,
@@ -77,6 +206,11 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         reconnect_in_progress: Arc::new(AtomicBool::new(false)),
                         active_subscriptions: std::sync::Mutex::new(Vec::new()),
                         ping_task_handle: std::sync::Mutex::new(None),
+                        connection_state: Mutex::new(ConnectionState::Connected),
+                        metrics: ConnectionMetrics::default(),
+                        start_time: Instant::now(),
+                        last_ping_time: AtomicU64::new(chrono::Utc::now().timestamp() as u64),
+                        ping_shutdown_tx: Mutex::new(None),
                     };
                 }
                 Err(err) => match err {
@@ -243,26 +377,30 @@ impl<H: MessageHandler> WSClientInternal<H> {
             tokio::time::sleep(Duration::from_secs(backoff_time)).await;
 
             // Пытаемся переподключиться
-            match super::connect_async::connect_async(&self.url, None).await {
-                Ok((message_rx, new_command_tx)) => {
-                    // Обновляем command_tx
-                    unsafe {
-                        // Это небезопасно, но необходимо для обновления command_tx
-                        // Альтернативой было бы использование Arc<Mutex<Sender<Message>>>
-                        let self_mut = self as *const Self as *mut Self;
-                        (*self_mut).command_tx = new_command_tx;
-                    }
+                    self.metrics.record_reconnection_attempt();
+                    
+                    match super::connect_async::connect_async(&self.url, None).await {
+                        Ok((message_rx, new_command_tx)) => {
+                            // Обновляем command_tx
+                            unsafe {
+                                // Это небезопасно, но необходимо для обновления command_tx
+                                // Альтернативой было бы использование Arc<Mutex<Sender<Message>>>
+                                let self_mut = self as *const Self as *mut Self;
+                                (*self_mut).command_tx = new_command_tx;
+                            }
 
-                    info!("Successfully reconnected to {} after {} attempts", self.url, attempt);
+                            self.metrics.record_connection_success();
+                            self.set_connection_state(ConnectionState::Connected);
+                            log_connection_event(self.exchange, "reconnection_success", &format!("Reconnected after {} attempts", attempt));
 
-                    // Восстанавливаем подписки
-                    let subscriptions = {
-                        let guard = self.active_subscriptions.lock().unwrap();
-                        guard.clone()
-                    };
+                            // Восстанавливаем подписки
+                            let subscriptions = {
+                                let guard = self.active_subscriptions.lock().unwrap();
+                                guard.clone()
+                            };
 
-                    if !subscriptions.is_empty() {
-                        info!("Restoring {} subscriptions...", subscriptions.len());
+                            if !subscriptions.is_empty() {
+                                info!("Restoring {} subscriptions...", subscriptions.len());
 
                         // Для Binance добавляем больший интервал между восстановлением подписок
                         let delay = if is_binance {
@@ -291,6 +429,8 @@ impl<H: MessageHandler> WSClientInternal<H> {
                     return Some(message_rx);
                 }
                 Err(err) => {
+                    self.metrics.record_connection_failure(&err.to_string());
+                    log_connection_event(self.exchange, "reconnection_failed", &format!("Attempt {}: {}", attempt, err));
                     error!(
                         "Failed to reconnect to {} (attempt {}/{}): {}",
                         self.url, attempt, MAX_RECONNECT_ATTEMPTS, err
@@ -303,12 +443,14 @@ impl<H: MessageHandler> WSClientInternal<H> {
             }
         }
 
-        error!(
-            "Failed to reconnect to {} after {} attempts, giving up",
-            self.url, MAX_RECONNECT_ATTEMPTS
-        );
-        self.reconnect_in_progress.store(false, Ordering::SeqCst);
-        None
+                self.set_connection_state(ConnectionState::Failed("Max reconnection attempts exceeded".to_string()));
+                log_connection_event(self.exchange, "reconnection_failed_final", &format!("Giving up after {} attempts", MAX_RECONNECT_ATTEMPTS));
+                error!(
+                    "Failed to reconnect to {} after {} attempts, giving up",
+                    self.url, MAX_RECONNECT_ATTEMPTS
+                );
+                self.reconnect_in_progress.store(false, Ordering::SeqCst);
+                None
     }
 
     // Добавляем метод для запуска пинг-задачи
@@ -316,6 +458,9 @@ impl<H: MessageHandler> WSClientInternal<H> {
         if let Some((msg, interval)) = handler.get_ping_msg_and_interval() {
             // Создаем канал для отслеживания состояния соединения
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+            
+            // Сохраняем sender для graceful shutdown
+            *self.ping_shutdown_tx.lock().unwrap() = Some(shutdown_tx.clone());
 
             // send heartbeat periodically
             let command_tx_clone = self.command_tx.clone();
@@ -351,11 +496,16 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         now = timer.tick() => {
                             debug!("{:?} sending ping {}", now, msg.to_text().unwrap());
                             if let Err(err) = command_tx_clone.send(msg.clone()).await {
-                                error!("Error sending ping {}", err);
+                                error!("Error sending ping to {}: {}", exchange_clone, err);
+                                // Записываем метрику ошибки ping
+                                log_connection_event(exchange_clone, "ping_failure", &format!("Failed to send ping: {}", err));
                                 // Если канал закрыт, выходим из цикла
                                 break;
                             } else {
                                 num_unanswered_ping_clone.fetch_add(1, Ordering::SeqCst);
+                                // Обновляем время последнего ping
+                                // last_ping_time.store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
+                                debug!("Ping sent successfully to {}", exchange_clone);
                             }
                         }
 
@@ -367,10 +517,12 @@ impl<H: MessageHandler> WSClientInternal<H> {
                                     "Too many unanswered pings ({}) for {}, connection might be dead",
                                     unanswered, url_clone
                                 );
+                                
+                                log_connection_event(exchange_clone, "ping_timeout", &format!("Too many unanswered pings: {}", unanswered));
 
                                 // Отправляем сообщение о закрытии соединения, чтобы инициировать переподключение
                                 if let Err(err) = command_tx_clone.send(Message::Close(None)).await {
-                                    error!("Failed to send close message: {}", err);
+                                    error!("Failed to send close message to {}: {}", exchange_clone, err);
                                     // Если канал закрыт, выходим из цикла
                                     break;
                                 } else {
@@ -802,6 +954,8 @@ impl<H: MessageHandler> WSClientInternal<H> {
                     continue 'connection_loop;
                 } else {
                     // Если переподключение не удалось после нескольких попыток, выходим
+                    self.set_connection_state(ConnectionState::Failed("Reconnection failed".to_string()));
+                    log_connection_event(self.exchange, "connection_failed_final", "Exiting after failed reconnection attempts");
                     error!("Failed to reconnect after multiple attempts, exiting...");
                     break 'connection_loop;
                 }
@@ -817,16 +971,15 @@ impl<H: MessageHandler> WSClientInternal<H> {
     }
 
     pub async fn close(&self) {
-        // Отменяем пинг-задачу при закрытии соединения
-        {
-            let mut guard = self.ping_task_handle.lock().unwrap();
-            if let Some(handle) = guard.take() {
-                info!("Aborting ping task during connection close");
-                handle.abort();
-            }
-        }
+        log_connection_event(self.exchange, "close_requested", "Closing WebSocket connection");
+        self.set_connection_state(ConnectionState::Disconnected);
+        
+        // Graceful shutdown ping задачи
+        self.stop_ping_task_safely();
 
         // close the websocket connection and break the while loop in run()
         _ = self.command_tx.send(Message::Close(None)).await;
+        
+        log_connection_event(self.exchange, "close_completed", "WebSocket connection closed");
     }
 }

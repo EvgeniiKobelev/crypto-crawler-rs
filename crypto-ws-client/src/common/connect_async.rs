@@ -10,8 +10,8 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 use tokio_tungstenite::{
-    tungstenite::{Error, Message},
     MaybeTlsStream, WebSocketStream,
+    tungstenite::{Error, Message},
 };
 
 /// Wraps a websocket client inside an event loop, returns a message_rx to
@@ -114,8 +114,20 @@ async fn connect_async_internal<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                   let _= message_tx.send(msg).await;
                 }
                 Some(Err(err)) => {
-                  error!("Failed to read, error: {}", err);
-                  break;
+                  match &err {
+                    Error::ConnectionClosed | Error::Protocol(_) => {
+                      warn!("Connection lost: {}, attempting reconnect", err);
+                      break;
+                    }
+                    Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                      warn!("Unexpected EOF, server closed connection: {}", err);
+                      break;
+                    }
+                    _ => {
+                      error!("Unrecoverable WebSocket error: {}", err);
+                      break;
+                    }
+                  }
                 }
                 None => {
                   debug!("message_tx closed");

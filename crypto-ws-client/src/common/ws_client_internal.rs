@@ -469,8 +469,8 @@ impl<H: MessageHandler> WSClientInternal<H> {
             // Добавляем механизм проверки состояния соединения
             let url_clone = self.url.clone();
             let exchange_clone = self.exchange;
-            // Используем Arc для безопасного доступа к AtomicBool между потоками
-            let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
+            // Переменная для будущего использования в мониторинге
+            let _reconnect_in_progress_clone = self.reconnect_in_progress.clone();
 
             let ping_task = tokio::task::spawn(async move {
                 let mut timer = {
@@ -512,7 +512,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                         _ = health_check_timer.tick() => {
                             // Проверяем количество неотвеченных пингов
                             let unanswered = num_unanswered_ping_clone.load(Ordering::Acquire);
-                            if unanswered > 2 && !reconnect_in_progress_clone.load(Ordering::Acquire) {
+                            if unanswered > 2 && !_reconnect_in_progress_clone.load(Ordering::Acquire) {
                                 warn!(
                                     "Too many unanswered pings ({}) for {}, connection might be dead",
                                     unanswered, url_clone
@@ -535,7 +535,7 @@ impl<H: MessageHandler> WSClientInternal<H> {
                             // Проверка только для Binance
                             if is_binance {
                                 let unanswered = num_unanswered_ping_clone.load(Ordering::Acquire);
-                                if unanswered > 1 && !reconnect_in_progress_clone.load(Ordering::Acquire) {
+                                if unanswered > 1 && !_reconnect_in_progress_clone.load(Ordering::Acquire) {
                                     warn!(
                                         "Binance connection health check: {} unanswered pings for {}",
                                         unanswered, url_clone
@@ -588,35 +588,6 @@ impl<H: MessageHandler> WSClientInternal<H> {
 
             // Создаем отдельную задачу для мониторинга состояния переподключения
             let reconnect_in_progress_clone = self.reconnect_in_progress.clone();
-            let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
-
-            // Запускаем задачу, которая будет следить за флагом reconnect_in_progress
-            // и отправлять сигнал остановки пинг-задаче при необходимости
-            tokio::task::spawn(async move {
-                let mut check_interval = tokio::time::interval(Duration::from_secs(1));
-                loop {
-                    check_interval.tick().await;
-
-                    // Если началось переподключение, отправляем сигнал остановки
-                    if reconnect_in_progress_clone.load(Ordering::Acquire) {
-                        let mut guard = shutdown_tx.lock().unwrap();
-                        if let Some(tx) = guard.take() {
-                            info!(
-                                "Sending shutdown signal to ping task for {} due to reconnection",
-                                exchange_clone
-                            );
-                            if let Err(err) = tx.send(true) {
-                                error!("Failed to send shutdown signal to ping task: {}", err);
-                            }
-                            // Выходим из цикла после отправки сигнала
-                            break;
-                        } else {
-                            // Сигнал уже был отправлен или канал закрыт, выходим
-                            break;
-                        }
-                    }
-                }
-            });
         }
     }
 
